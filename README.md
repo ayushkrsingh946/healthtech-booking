@@ -12,10 +12,11 @@ The work is organized in phases:
 * **Phase 1:** Distributed system fundamentals (service boundaries, async communication, data ownership)
 * **Phase 2:** Domain complexity (patients, doctors, authentication, availability, booking rules, cross-service
   validation)
-* **Phase 3:** Production-grade concerns (observability, reliability, service discovery, AI-assisted workflows)
+* **Phase 3 (in progress):** Production-grade concerns (observability, reliability, service discovery, AI-assisted
+  workflows); see Project Phases for what is done
 
 Phase 2 is complete: end-to-end booking with JWT-secured, race-safe reservations and RFC 9457 error
-handling.
+handling. Phase 3 is in progress.
 
 ---
 
@@ -265,11 +266,12 @@ Documented in [`docs/adr/`](docs/adr/):
 
 ## Current Limitations (Intentional)
 
-* **Doctor onboarding trust** is intentionally shallow in Phase 2. Self-registration (`POST /api/doctors/register`) is
+* **Doctor onboarding trust** is intentionally shallow so far. Self-registration (`POST /api/doctors/register`) is
   public and issues a DOCTOR token immediately: it proves someone can create an account, not that they are a verified
   provider. Production would gate provider visibility and trust behind credential verification (for example, an
-  Arztekammer number) and identity checks in a proper onboarding flow; that distinction, and closing it, is deferred
-  to Phase 3. Admin-provisioned doctor accounts are deferred too, as YAGNI at the current scale. Browsing (`GET`)
+  Arztekammer number) and identity checks in a proper onboarding flow; that distinction, and closing it, is Phase 3
+  work that has not started (see Project Phases). Admin-provisioned doctor accounts are deferred, as YAGNI at the current
+  scale. Browsing (`GET`)
   stays public by design.
 * **Refresh tokens** are not implemented; access tokens are valid for one hour.
 * **The 48-hour change rule in the UI assumes one region.** The frontend decides whether to open the change form from
@@ -279,7 +281,8 @@ Documented in [`docs/adr/`](docs/adr/):
   blocked. Planned fix if the application becomes multi-region: the server returns a `changeableUntil` field on appointment
   responses, an absolute UTC timestamp computed from its clock and the property, and the UI only compares it with the
   current time. That removes both the constant and the time-zone assumption (additive API change, so it needs approval).
-* **Service discovery** is static per [ADR-006](docs/adr/ADR-006-service-discovery.md); Eureka/Consul is deferred
+* **Service discovery** is static per [ADR-006](docs/adr/ADR-006-service-discovery.md); Eureka/Consul is Phase 3 work
+  that has not started.
 * **Reliability/observability**: correlation-ID propagation and structured logging are implemented across all
   services and the gateway (see Observability above), and event publishing goes through the transactional outbox
   (see Reliability above). Distributed tracing, metrics, consumer failure handling (poison-pill handling, retries and
@@ -304,11 +307,25 @@ rejection, read-model projection, ownership enforcement)
 
 ### Phase 3: Production & Intelligence Layer (in progress)
 
-Correlation-ID propagation and structured logging (done, see Observability) · transactional outbox (done, see
-Reliability) · notification deduplication by event id (done) · gateway-level JWT edge validation (done, see
-Authentication and Authorization) · metrics and distributed tracing · consumer failure handling: poison pills, retries
-and dead-letter topic (specified in ADR-009, not implemented) · event versioning · service discovery · AI-assisted
-symptom-to-specialty triage
+Done:
+
+* Correlation-ID propagation and structured logging (see Observability)
+* Transactional outbox (see Reliability)
+* Notification deduplication by event id (see Reliability)
+* Gateway-level JWT edge validation (see Authentication and Authorization)
+
+Specified, not implemented:
+
+* Consumer failure handling: poison pills, retries and a dead-letter topic
+  ([ADR-009](docs/adr/ADR-009-consumer-idempotency-and-failure-handling.md))
+
+Not started:
+
+* Metrics and distributed tracing
+* Event versioning
+* Service discovery (static per [ADR-006](docs/adr/ADR-006-service-discovery.md))
+* Doctor credential verification and a proper onboarding flow (see Current Limitations)
+* AI-assisted symptom-to-specialty triage
 
 ---
 
