@@ -209,12 +209,13 @@ unpublished rows are never pruned. Delivery is therefore at-least-once: if the r
 the row is marked, the event is sent again. The one exception is the demo `DoctorSeeder`, which still publishes
 directly with `KafkaTemplate`. See [ADR-008](docs/adr/ADR-008-transactional-outbox.md).
 
-**Consumer idempotency and dead-letter handling (specified, not implemented).**
-[ADR-009](docs/adr/ADR-009-consumer-idempotency-and-failure-handling.md) specifies deduplication by `eventId` with a
-unique index in `notification-service`, plus `ErrorHandlingDeserializer`, retry classification and a dead-letter topic
-for the consumers. None of that exists in the code yet. Today the `appointment-service` read-model consumers are
-idempotent only because they upsert by id; `notification-service` inserts a new row for every delivery, so a
-redelivered event produces a duplicate notification. No consumer has a retry policy or dead-letter topic configured.
+**Consumer idempotency (implemented) and failure handling (specified, not implemented).**
+[ADR-009](docs/adr/ADR-009-consumer-idempotency-and-failure-handling.md) is still `Proposed`. Its deduplication part
+exists: `notification-service` stores the event id under a unique index (`ux_notification_event_id`) and
+`NotificationService.record` ignores a violation of that index, so a redelivered `appointment.booked`,
+`appointment.cancelled` or `appointment.changed` is stored once. The `appointment-service` read-model consumers are
+idempotent because they upsert by id. The rest of ADR-009 does not exist in the code yet: `ErrorHandlingDeserializer`,
+retry classification and a dead-letter topic. No consumer has a retry policy or dead-letter topic configured.
 
 ---
 
@@ -232,7 +233,7 @@ Documented in [`docs/adr/`](docs/adr/):
 * [ADR-007](docs/adr/ADR-007-correlation-id-propagation.md) — Correlation ID Propagation for Log Correlation
 * [ADR-008](docs/adr/ADR-008-transactional-outbox.md) — Transactional Outbox for Domain Event Publishing
 * [ADR-009](docs/adr/ADR-009-consumer-idempotency-and-failure-handling.md) — Consumer Idempotency and Failure Handling
-  (specified, not implemented)
+  (deduplication implemented; failure handling and dead-lettering specified, not implemented)
 
 * Each ADR includes context, alternatives, trade-offs, and rationale.
 
@@ -281,9 +282,9 @@ Documented in [`docs/adr/`](docs/adr/):
 * **Service discovery** is static per [ADR-006](docs/adr/ADR-006-service-discovery.md); Eureka/Consul is deferred
 * **Reliability/observability**: correlation-ID propagation and structured logging are implemented across all
   services and the gateway (see Observability above), and event publishing goes through the transactional outbox
-  (see Reliability above). Distributed tracing, metrics, consumer idempotency, consumer retries and the dead-letter
-  topic ([ADR-009](docs/adr/ADR-009-consumer-idempotency-and-failure-handling.md)), and event versioning are still
-  Phase 3.
+  (see Reliability above). Distributed tracing, metrics, consumer failure handling (poison-pill handling, retries and
+  the dead-letter topic of [ADR-009](docs/adr/ADR-009-consumer-idempotency-and-failure-handling.md)), and event
+  versioning are still Phase 3.
 
 ---
 
@@ -304,9 +305,10 @@ rejection, read-model projection, ownership enforcement)
 ### Phase 3: Production & Intelligence Layer (in progress)
 
 Correlation-ID propagation and structured logging (done, see Observability) · transactional outbox (done, see
-Reliability) · gateway-level JWT edge validation (done, see Authentication and Authorization) · metrics and distributed tracing ·
-consumer idempotency, retries and dead-letter topic (specified in ADR-009, not implemented) · event versioning ·
-service discovery · AI-assisted symptom-to-specialty triage
+Reliability) · notification deduplication by event id (done) · gateway-level JWT edge validation (done, see
+Authentication and Authorization) · metrics and distributed tracing · consumer failure handling: poison pills, retries
+and dead-letter topic (specified in ADR-009, not implemented) · event versioning · service discovery · AI-assisted
+symptom-to-specialty triage
 
 ---
 
@@ -350,14 +352,15 @@ real persistence, real RS256 signature validation, and in some cases a real Kafk
   browsing), so it sends no token.
 * `appointment-service` (`AppointmentIntegrationTest`, `AppointmentChangeIntegrationTest`,
   `AvailabilityIntegrationTest`): booking, cancellation, changing (including a change racing a cancel and concurrent
-  moves to one slot), ownership checks, and availability against a real Postgres container. `AppointmentIntegrationTest` mints its JWTs
-  with a throwaway RSA key pair generated inside the test, so it never reads `keys/private.pem`. There is no Kafka in these tests: the relay's poll
-  delay is pushed out to an hour. `ReadModelProjectionIntegrationTest` instead runs a real `ConfluentKafkaContainer`
+  moves to one slot), ownership checks, and availability against a real Postgres container. All three extend
+  `AbstractAppointmentApiTest`, which mints JWTs with a throwaway RSA key pair generated inside the test, so they never
+  read `keys/private.pem`. There is no Kafka in these tests: the relay's poll delay is pushed out to an hour.
+  `ReadModelProjectionIntegrationTest` instead runs a real `ConfluentKafkaContainer`
   alongside Postgres, publishes real `patient.registered`/`doctor.registered` events, and asserts the read-model
   consumer projects them correctly, exercising the actual Kafka listener rather than a mock.
 * Outbox tests (`outbox/` in patient-, doctor- and appointment-service, one adapted copy each):
   `OutboxAtomicityIntegrationTest` (real Postgres: a successful write adds exactly one unpublished outbox row, a
-  rolled-back write adds none), `OutboxRelayIntegrationTest` (real Postgres and Kafka: the correlation id is
+  rolled-back write adds none, for booking, cancelling and changing in appointment-service), `OutboxRelayIntegrationTest` (real Postgres and Kafka: the correlation id is
   re-attached from the stored column, concurrent relays publish each row exactly once, and `claimBatch` does not
   block on rows another transaction has locked), `OutboxRelayKafkaOutageIntegrationTest` (pauses the Kafka container:
   the request still returns `201` and leaves an unpublished row, and the row is published once Kafka is back), and

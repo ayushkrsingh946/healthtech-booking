@@ -140,8 +140,8 @@ without bound as published rows accumulate. `idx_outbox_published` supports the 
 delete the same way.
 
 `id` is the event's existing `eventId` rather than a separate identifier, so one UUID identifies
-the outbox row and the event in the Kafka record's payload. It is also the key consumers are to
-deduplicate on (ADR-009); no consumer does so yet.
+the outbox row and the event in the Kafka record's payload. It is also the key consumers deduplicate
+on (ADR-009); `notification-service` does so with `ux_notification_event_id`.
 
 `aggregate_id` is used as the Kafka message key, so all events for one patient, doctor or
 appointment land on the same partition.
