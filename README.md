@@ -342,16 +342,26 @@ Four services have full application-context integration tests backed by Testcont
 real persistence, real RS256 signature validation, and in some cases a real Kafka broker:
 
 * `patient-service` (`AuthIntegrationTest`): registration and duplicate-username/email conflict flows against a real
-  Postgres container. Kafka is mocked with `@MockitoBean KafkaTemplate`, and the test asserts `patient.registered`
-  is published with the expected payload.
-* `doctor-service` (`DoctorIntegrationTest`): the same pattern, plus JWT-secured write paths, using a throwaway RSA
-  key pair generated inside the test (its own `TestJwtFactory`), so it never reads `keys/private.pem`.
+  Postgres container and a real Kafka container. The test consumes `patient.registered` from the broker and asserts
+  the key, payload and `X-Correlation-Id` header, so it covers the outbox relay end to end.
+* `doctor-service` (`DoctorIntegrationTest`): the same pattern for `doctor.registered`, plus opening-hours validation
+  and login, against real Postgres and Kafka containers. Only `DoctorSeeder`'s direct `KafkaTemplate` is mocked,
+  since the seeder runs at startup and bypasses the outbox. It calls only public endpoints (register, login,
+  browsing), so it sends no token.
 * `appointment-service` (`AppointmentIntegrationTest`, `AppointmentChangeIntegrationTest`,
   `AvailabilityIntegrationTest`): booking, cancellation, changing (including a change racing a cancel and concurrent
-  moves to one slot), ownership checks, and availability against a real Postgres container, with Kafka mocked and JWTs minted the same
-  throwaway way. `ReadModelProjectionIntegrationTest` instead runs a real `ConfluentKafkaContainer` alongside
-  Postgres, publishes real `patient.registered`/`doctor.registered` events, and asserts the read-model consumer
-  projects them correctly, exercising the actual Kafka listener rather than a mock.
+  moves to one slot), ownership checks, and availability against a real Postgres container. `AppointmentIntegrationTest` mints its JWTs
+  with a throwaway RSA key pair generated inside the test, so it never reads `keys/private.pem`. There is no Kafka in these tests: the relay's poll
+  delay is pushed out to an hour. `ReadModelProjectionIntegrationTest` instead runs a real `ConfluentKafkaContainer`
+  alongside Postgres, publishes real `patient.registered`/`doctor.registered` events, and asserts the read-model
+  consumer projects them correctly, exercising the actual Kafka listener rather than a mock.
+* Outbox tests (`outbox/` in patient-, doctor- and appointment-service, one adapted copy each):
+  `OutboxAtomicityIntegrationTest` (real Postgres: a successful write adds exactly one unpublished outbox row, a
+  rolled-back write adds none), `OutboxRelayIntegrationTest` (real Postgres and Kafka: the correlation id is
+  re-attached from the stored column, concurrent relays publish each row exactly once, and `claimBatch` does not
+  block on rows another transaction has locked), `OutboxRelayKafkaOutageIntegrationTest` (pauses the Kafka container:
+  the request still returns `201` and leaves an unpublished row, and the row is published once Kafka is back), and
+  `OutboxPruningJobTest` (only published rows past retention are deleted).
 * `notification-service` (`NotificationConsumerIntegrationTest`): the same real-Kafka-container approach, publishing
   a real `appointment.booked` or `appointment.changed` event and asserting a notification row gets persisted (and that a
   redelivered event is stored once), verifying the consumer wiring end to end. `NotificationSchemaUpgradeIntegrationTest`

@@ -2,27 +2,30 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
 The system is event-driven: services communicate asynchronously over Kafka rather than by
-synchronous calls (see ADR-002: Kafka as Event Broker). Five code paths currently publish
-domain events, and all five write to the database and to Kafka as two independent operations:
+synchronous calls (see ADR-002: Kafka as Event Broker). Before this decision, four code paths
+published domain events, and all four wrote to the database and to Kafka as two independent
+operations:
 
-* `AuthService.register` (patient-service): persists the patient, then publishes
+* `AuthService.register` (patient-service): persisted the patient, then published
   `PatientRegistered` to `patient.registered` for the appointment-service read model.
-* `DoctorAuthService.register` (doctor-service): persists the doctor, then publishes
+* `DoctorAuthService.register` (doctor-service): persisted the doctor, then published
   `DoctorRegistered` to `doctor.registered` for the same read model. This method is annotated
-  `@Transactional` and the publish happens inside the transaction boundary.
-* `AppointmentService.bookAppointment`: persists the appointment, then publishes
+  `@Transactional` and the publish happened inside the transaction boundary.
+* `AppointmentService.bookAppointment`: persisted the appointment, then published
   `AppointmentBooked` to `appointment.booked` for notification-service.
-* `AppointmentService.cancelAppointment`: updates the appointment status, then publishes
+* `AppointmentService.cancelAppointment`: updated the appointment status, then published
   `AppointmentCancelled` to `appointment.cancelled` for notification-service. It locks the row first
-  and publishes nothing when the appointment is already cancelled, so a repeated cancel adds no event.
-* `AppointmentService.updateAppointment`: updates the purpose and/or time of an appointment, then
-  publishes `AppointmentChanged` to `appointment.changed` for notification-service. It locks the row
-  first and publishes nothing when only the notes change.
+  and publishes nothing when the appointment is already cancelled, so a repeated cancel adds no event
+  (unchanged by this decision).
+
+`AppointmentService.updateAppointment`, which publishes `AppointmentChanged` to `appointment.changed`
+for notification-service, was added after this decision and publishes through the outbox from the
+start. It locks the row first and publishes nothing when only the notes change.
 
 Postgres and Kafka are separate systems with no shared transaction, so these two writes cannot
 succeed or fail together. This is the dual-write problem, and it appears here in two directions.
@@ -54,8 +57,8 @@ leaves consumers acting on state that does not exist, which is the worse of the 
 `@Transactional` on the publishing methods: the intuitive fix, and the one a reader will propose.
 It does not work, because the Kafka producer is not a transactional resource enrolled in the JDBC
 transaction. There is nothing to roll back if the database write fails after the send, and
-nothing to retry inside the transaction if the send fails. `DoctorAuthService.register` is the
-existing proof of this in the repository.
+nothing to retry inside the transaction if the send fails. `DoctorAuthService.register` was the
+proof of this in the repository before this decision.
 
 Transactional outbox: write the event as a row in the same database, in the same local
 transaction as the aggregate. Atomicity then comes from Postgres against a single resource. A
@@ -114,19 +117,30 @@ CREATE TABLE outbox
     topic          VARCHAR(128) NOT NULL,
     payload        JSONB        NOT NULL,
     correlation_id VARCHAR(64),
-    created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    published_at   TIMESTAMPTZ
+    created_at     TIMESTAMP    NOT NULL,
+    published_at   TIMESTAMP
 );
 
 CREATE INDEX idx_outbox_pending
     ON outbox (created_at) WHERE published_at IS NULL;
+
+CREATE INDEX idx_outbox_published
+    ON outbox (published_at) WHERE published_at IS NOT NULL;
 ```
 
-The index predicate is not optional. Without it the relay scans an index that grows without
-bound as published rows accumulate.
+As built, Hibernate creates the table from the `OutboxMessage` entity (`ddl-auto: update`);
+`schema-postgresql.sql` in each service holds only the two indexes. The timestamps are therefore
+`LocalDateTime` columns without a time zone, and `created_at` is set by the application
+(`@CreationTimestamp`), not by a database default. The relay orders by `created_at` and the
+pruning job compares `published_at` to a cutoff, both within one service's clock and time zone.
+
+The `idx_outbox_pending` predicate is not optional. Without it the relay scans an index that grows
+without bound as published rows accumulate. `idx_outbox_published` supports the pruning job's
+delete the same way.
 
 `id` is the event's existing `eventId` rather than a separate identifier, so one UUID identifies
-the outbox row, the Kafka record and the consumer's deduplication key.
+the outbox row and the event in the Kafka record's payload. It is also the key consumers are to
+deduplicate on (ADR-009); no consumer does so yet.
 
 `aggregate_id` is used as the Kafka message key, so all events for one patient, doctor or
 appointment land on the same partition.
@@ -148,8 +162,10 @@ so a redelivered `appointment.booked`, `appointment.cancelled` or `appointment.c
 once. The rest of the consumer-side work (failure handling, poison pills, dead-lettering) is
 specified in ADR-009 and is not implemented yet.
 
-**Scope.** `DoctorSeeder` is excluded. It is a bootstrap path rather than a request path, and any
-events it fails to publish can be regenerated by re-running the seeder.
+**Scope.** `DoctorSeeder` is excluded. It is a bootstrap path rather than a request path, and it
+still sends `doctor.registered` directly with `KafkaTemplate`. An event it fails to send is not
+regenerated by re-running the seeder: `seedIfAbsent` skips a doctor that already exists, so the
+read model stays without that doctor until the doctor row is deleted and seeded again.
 
 **Retention.** Published rows are pruned daily, retaining seven days. A daily job against a
 weekly retention keeps the maximum age bounded at eight days; a weekly job would allow fourteen.
