@@ -12,10 +12,11 @@ The work is organized in phases:
 * **Phase 1:** Distributed system fundamentals (service boundaries, async communication, data ownership)
 * **Phase 2:** Domain complexity (patients, doctors, authentication, availability, booking rules, cross-service
   validation)
-* **Phase 3:** Production-grade concerns (observability, reliability, service discovery, AI-assisted workflows)
+* **Phase 3 (in progress):** Production-grade concerns (observability, reliability, service discovery, AI-assisted
+  workflows); see Project Phases for what is done
 
 Phase 2 is complete: end-to-end booking with JWT-secured, race-safe reservations and RFC 9457 error
-handling.
+handling. Phase 3 is in progress.
 
 ---
 
@@ -192,8 +193,30 @@ grep for one id relates a registration request to the read-model projection it t
 published outside a request context, such as the demo seeder, fall back to a generated id rather than failing.
 See [ADR-007](docs/adr/ADR-007-correlation-id-propagation.md) for the trade-off against distributed tracing.
 
-Metrics, distributed tracing (spans), retries, and a dead-letter queue for Kafka consumers are not implemented yet
-and remain Phase 3 work; see Current Limitations.
+Metrics, distributed tracing (spans), and consumer-side retries and a dead-letter topic are not implemented yet and
+remain Phase 3 work; see Reliability and Current Limitations.
+
+---
+
+## Reliability
+
+**Transactional outbox (implemented).** `patient-service`, `doctor-service` and `appointment-service` do not call Kafka
+from the request path. `DomainEventPublisher` writes each event to an `outbox` table in the same database transaction
+as the change it describes, so the event exists if and only if that change committed. A scheduled `OutboxRelay`
+(every second, batches of 100) claims unpublished rows with `FOR UPDATE SKIP LOCKED`, sends them to Kafka and marks
+them published; a row whose send fails stays unpublished and is retried on the next poll, with no retry limit. The
+correlation id is stored on the row and re-attached as the message header. Published rows are pruned after seven days;
+unpublished rows are never pruned. Delivery is therefore at-least-once: if the relay crashes after a send but before
+the row is marked, the event is sent again. The one exception is the demo `DoctorSeeder`, which still publishes
+directly with `KafkaTemplate`. See [ADR-008](docs/adr/ADR-008-transactional-outbox.md).
+
+**Consumer idempotency (implemented) and failure handling (specified, not implemented).**
+[ADR-009](docs/adr/ADR-009-consumer-idempotency-and-failure-handling.md) is still `Proposed`. Its deduplication part
+exists: `notification-service` stores the event id under a unique index (`ux_notification_event_id`) and
+`NotificationService.record` ignores a violation of that index, so a redelivered `appointment.booked`,
+`appointment.cancelled` or `appointment.changed` is stored once. The `appointment-service` read-model consumers are
+idempotent because they upsert by id. The rest of ADR-009 does not exist in the code yet: `ErrorHandlingDeserializer`,
+retry classification and a dead-letter topic. No consumer has a retry policy or dead-letter topic configured.
 
 ---
 
@@ -209,7 +232,10 @@ Documented in [`docs/adr/`](docs/adr/):
 * [ADR-005](docs/adr/ADR-005-cross-service-validation.md) — Cross-Service Validation via event-driven read-model
 * [ADR-006](docs/adr/ADR-006-service-discovery.md) — Static Service discovery
 * [ADR-007](docs/adr/ADR-007-correlation-id-propagation.md) — Correlation ID Propagation for Log Correlation
- 
+* [ADR-008](docs/adr/ADR-008-transactional-outbox.md) — Transactional Outbox for Domain Event Publishing
+* [ADR-009](docs/adr/ADR-009-consumer-idempotency-and-failure-handling.md) — Consumer Idempotency and Failure Handling
+  (deduplication implemented; failure handling and dead-lettering specified, not implemented)
+
 * Each ADR includes context, alternatives, trade-offs, and rationale.
 
 ---
@@ -233,20 +259,19 @@ Documented in [`docs/adr/`](docs/adr/):
 | Changing another patient's appointment             | Rejected with `403`; no state change                                                    |
 | Change while the appointment row is locked > 3s    | `503` problem+json (`Appointment Busy`) with `Retry-After: 1`; safe to retry            |
 | Duplicate username/email                           | `409` problem+json                                                                      |
-| Kafka downtime                                     | Booking and registration fail explicitly; no silent data loss                           |
+| Kafka downtime                                     | Booking, changing, cancellation and registration still succeed; the event waits in the outbox and the relay publishes it when Kafka returns (see Reliability). Until then, a newly registered patient or doctor is unknown to appointment-service (booking returns `404`) and no notification is recorded |
 | Duplicate event delivery                           | Read-model consumers upsert; notification-service stores each event id once (unique index); event versioning is Phase 3 |
 
 ---
 
 ## Current Limitations (Intentional)
 
-* **Gateway-level JWT enforcement** is deferred. Per-service validation is the authoritative boundary and is enforced;
-  the gateway edge filter is planned defense-in-depth.
-* **Doctor onboarding trust** is intentionally shallow in Phase 2. Self-registration (`POST /api/doctors/register`) is
+* **Doctor onboarding trust** is intentionally shallow so far. Self-registration (`POST /api/doctors/register`) is
   public and issues a DOCTOR token immediately: it proves someone can create an account, not that they are a verified
   provider. Production would gate provider visibility and trust behind credential verification (for example, an
-  Arztekammer number) and identity checks in a proper onboarding flow; that distinction, and closing it, is deferred
-  to Phase 3. Admin-provisioned doctor accounts are deferred too, as YAGNI at the current scale. Browsing (`GET`)
+  Arztekammer number) and identity checks in a proper onboarding flow; that distinction, and closing it, is Phase 3
+  work that has not started (see Project Phases). Admin-provisioned doctor accounts are deferred, as YAGNI at the current
+  scale. Browsing (`GET`)
   stays public by design.
 * **Refresh tokens** are not implemented; access tokens are valid for one hour.
 * **The 48-hour change rule in the UI assumes one region.** The frontend decides whether to open the change form from
@@ -256,9 +281,12 @@ Documented in [`docs/adr/`](docs/adr/):
   blocked. Planned fix if the application becomes multi-region: the server returns a `changeableUntil` field on appointment
   responses, an absolute UTC timestamp computed from its clock and the property, and the UI only compares it with the
   current time. That removes both the constant and the time-zone assumption (additive API change, so it needs approval).
-* **Service discovery** is static per [ADR-006](docs/adr/ADR-006-service-discovery.md); Eureka/Consul is deferred
+* **Service discovery** is static per [ADR-006](docs/adr/ADR-006-service-discovery.md); Eureka/Consul is Phase 3 work
+  that has not started.
 * **Reliability/observability**: correlation-ID propagation and structured logging are implemented across all
-  services and the gateway (see Observability above). Distributed tracing, metrics, retries, DLQ, and event
+  services and the gateway (see Observability above), and event publishing goes through the transactional outbox
+  (see Reliability above). Distributed tracing, metrics, consumer failure handling (poison-pill handling, retries and
+  the dead-letter topic of [ADR-009](docs/adr/ADR-009-consumer-idempotency-and-failure-handling.md)), and event
   versioning are still Phase 3.
 
 ---
@@ -279,9 +307,25 @@ rejection, read-model projection, ownership enforcement)
 
 ### Phase 3: Production & Intelligence Layer (in progress)
 
-Correlation-ID propagation and structured logging (done, see Observability) · metrics and distributed tracing ·
-reliability (idempotency, retries, DLQ, event versioning) · gateway-level JWT edge validation · service discovery ·
-AI-assisted symptom-to-specialty triage
+Done:
+
+* Correlation-ID propagation and structured logging (see Observability)
+* Transactional outbox (see Reliability)
+* Notification deduplication by event id (see Reliability)
+* Gateway-level JWT edge validation (see Authentication and Authorization)
+
+Specified, not implemented:
+
+* Consumer failure handling: poison pills, retries and a dead-letter topic
+  ([ADR-009](docs/adr/ADR-009-consumer-idempotency-and-failure-handling.md))
+
+Not started:
+
+* Metrics and distributed tracing
+* Event versioning
+* Service discovery (static per [ADR-006](docs/adr/ADR-006-service-discovery.md))
+* Doctor credential verification and a proper onboarding flow (see Current Limitations)
+* AI-assisted symptom-to-specialty triage
 
 ---
 
@@ -317,16 +361,27 @@ Four services have full application-context integration tests backed by Testcont
 real persistence, real RS256 signature validation, and in some cases a real Kafka broker:
 
 * `patient-service` (`AuthIntegrationTest`): registration and duplicate-username/email conflict flows against a real
-  Postgres container. Kafka is mocked with `@MockitoBean KafkaTemplate`, and the test asserts `patient.registered`
-  is published with the expected payload.
-* `doctor-service` (`DoctorIntegrationTest`): the same pattern, plus JWT-secured write paths, using a throwaway RSA
-  key pair generated inside the test (its own `TestJwtFactory`), so it never reads `keys/private.pem`.
+  Postgres container and a real Kafka container. The test consumes `patient.registered` from the broker and asserts
+  the key, payload and `X-Correlation-Id` header, so it covers the outbox relay end to end.
+* `doctor-service` (`DoctorIntegrationTest`): the same pattern for `doctor.registered`, plus opening-hours validation
+  and login, against real Postgres and Kafka containers. Only `DoctorSeeder`'s direct `KafkaTemplate` is mocked,
+  since the seeder runs at startup and bypasses the outbox. It calls only public endpoints (register, login,
+  browsing), so it sends no token.
 * `appointment-service` (`AppointmentIntegrationTest`, `AppointmentChangeIntegrationTest`,
   `AvailabilityIntegrationTest`): booking, cancellation, changing (including a change racing a cancel and concurrent
-  moves to one slot), ownership checks, and availability against a real Postgres container, with Kafka mocked and JWTs minted the same
-  throwaway way. `ReadModelProjectionIntegrationTest` instead runs a real `ConfluentKafkaContainer` alongside
-  Postgres, publishes real `patient.registered`/`doctor.registered` events, and asserts the read-model consumer
-  projects them correctly, exercising the actual Kafka listener rather than a mock.
+  moves to one slot), ownership checks, and availability against a real Postgres container. All three extend
+  `AbstractAppointmentApiTest`, which mints JWTs with a throwaway RSA key pair generated inside the test, so they never
+  read `keys/private.pem`. There is no Kafka in these tests: the relay's poll delay is pushed out to an hour.
+  `ReadModelProjectionIntegrationTest` instead runs a real `ConfluentKafkaContainer`
+  alongside Postgres, publishes real `patient.registered`/`doctor.registered` events, and asserts the read-model
+  consumer projects them correctly, exercising the actual Kafka listener rather than a mock.
+* Outbox tests (`outbox/` in patient-, doctor- and appointment-service, one adapted copy each):
+  `OutboxAtomicityIntegrationTest` (real Postgres: a successful write adds exactly one unpublished outbox row, a
+  rolled-back write adds none, for booking, cancelling and changing in appointment-service), `OutboxRelayIntegrationTest` (real Postgres and Kafka: the correlation id is
+  re-attached from the stored column, concurrent relays publish each row exactly once, and `claimBatch` does not
+  block on rows another transaction has locked), `OutboxRelayKafkaOutageIntegrationTest` (pauses the Kafka container:
+  the request still returns `201` and leaves an unpublished row, and the row is published once Kafka is back), and
+  `OutboxPruningJobTest` (only published rows past retention are deleted).
 * `notification-service` (`NotificationConsumerIntegrationTest`): the same real-Kafka-container approach, publishing
   a real `appointment.booked` or `appointment.changed` event and asserting a notification row gets persisted (and that a
   redelivered event is stored once), verifying the consumer wiring end to end. `NotificationSchemaUpgradeIntegrationTest`

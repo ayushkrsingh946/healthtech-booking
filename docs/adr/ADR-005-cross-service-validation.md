@@ -81,4 +81,6 @@ consistent with the consistency analysis above.
 
 > **Note:** Resilience concerns for the event consumers themselves (retry on
 > transient processing failure, dead-letter handling, idempotency) are out of
-> scope here and are addressed as part of the Phase 3 reliability work.
+> scope here and are addressed as part of the Phase 3 reliability work, specified
+> in ADR-009. Idempotency is implemented in notification-service; retries and
+> dead-lettering are not yet.
