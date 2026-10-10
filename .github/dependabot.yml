@@ -21,6 +21,10 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # Spring Cloud uses calendar versions: 2025.1 reads as a minor bump but
+      # is the Spring Boot 4 release train. It moves with the Boot 4 migration.
+      - dependency-name: "org.springframework.cloud:spring-cloud-dependencies"
+        versions: ["[2025.1,)"]
     groups:
       maven-minor-patch:
         update-types:
@@ -68,6 +72,10 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # The build image tag (3.9-eclipse-temurin-21) already floats to the
+      # latest Maven 3.9.x on rebuild. Dependabot reads the JDK in the suffix
+      # as a patch change and proposes other JDKs, so the JDK is changed by hand.
+      - dependency-name: "maven"
     groups:
       docker-minor-patch:
         update-types:
