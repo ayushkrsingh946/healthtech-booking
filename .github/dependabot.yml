@@ -1,8 +1,11 @@
 version: 2
 
 # Minor and patch updates are grouped into one PR per ecosystem. Major
-# updates are not grouped, so each one gets its own PR. The commit prefix
-# makes PR titles follow `type(scope): subject`.
+# updates are ignored for Maven, npm and Docker: they are migrations (Spring
+# Boot 4, a new JDK base image, a new Node line) and are planned deliberately,
+# not merged as bumps. GitHub Actions majors are grouped into one PR because
+# they are cheap to take. The commit prefix makes PR titles follow
+# `type(scope): subject`.
 updates:
   - package-ecosystem: maven
     directories:
@@ -15,6 +18,9 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       maven-minor-patch:
         update-types:
@@ -27,6 +33,9 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-minor-patch:
         update-types:
@@ -40,10 +49,9 @@ updates:
     commit-message:
       prefix: "ci(deps)"
     groups:
-      github-actions-minor-patch:
-        update-types:
-          - minor
-          - patch
+      github-actions:
+        patterns:
+          - "*"
 
   - package-ecosystem: docker
     directories:
@@ -57,6 +65,9 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       docker-minor-patch:
         update-types:
