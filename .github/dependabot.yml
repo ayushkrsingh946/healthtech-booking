@@ -1,0 +1,83 @@
+version: 2
+
+# Minor and patch updates are grouped into one PR per ecosystem. Major
+# updates are ignored for Maven, npm and Docker: they are migrations (Spring
+# Boot 4, a new JDK base image, a new Node line) and are planned deliberately,
+# not merged as bumps. GitHub Actions majors are grouped into one PR because
+# they are cheap to take. The commit prefix makes PR titles follow
+# `type(scope): subject`.
+updates:
+  - package-ecosystem: maven
+    directories:
+      - /api-gateway
+      - /appointment-service
+      - /doctor-service
+      - /notification-service
+      - /patient-service
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      # Spring Cloud uses calendar versions: 2025.1 reads as a minor bump but
+      # is the Spring Boot 4 release train. It moves with the Boot 4 migration.
+      - dependency-name: "org.springframework.cloud:spring-cloud-dependencies"
+        versions: ["[2025.1,)"]
+    groups:
+      maven-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      npm-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: docker
+    directories:
+      - /api-gateway
+      - /appointment-service
+      - /doctor-service
+      - /frontend
+      - /notification-service
+      - /patient-service
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      # The build image tag (3.9-eclipse-temurin-21) already floats to the
+      # latest Maven 3.9.x on rebuild. Dependabot reads the JDK in the suffix
+      # as a patch change and proposes other JDKs, so the JDK is changed by hand.
+      - dependency-name: "maven"
+    groups:
+      docker-minor-patch:
+        update-types:
+          - minor
+          - patch

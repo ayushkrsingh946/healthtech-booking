@@ -1,6 +1,7 @@
 package com.healthtech.appointment.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.healthtech.appointment.config.ChangePolicyProperties;
 import com.healthtech.appointment.domain.Appointment;
 import com.healthtech.appointment.domain.AppointmentStatus;
 import com.healthtech.appointment.dto.AppointmentRequest;
@@ -10,6 +11,7 @@ import com.healthtech.appointment.event.AppointmentCancelled;
 import com.healthtech.appointment.exception.AppointmentAccessDeniedException;
 import com.healthtech.appointment.exception.AppointmentNotFoundException;
 import com.healthtech.appointment.exception.SlotAlreadyBookedException;
+import com.healthtech.appointment.exception.SlotInPastException;
 import com.healthtech.appointment.mapper.AppointmentMapper;
 import com.healthtech.appointment.outbox.OutboxEventWriter;
 import com.healthtech.appointment.outbox.OutboxRepository;
@@ -20,6 +22,7 @@ import com.healthtech.appointment.readmodel.ValidPatient;
 import com.healthtech.appointment.readmodel.ValidPatientRepository;
 import com.healthtech.appointment.repository.AppointmentRepository;
 import com.healthtech.appointment.service.booking.BookingRule;
+import com.healthtech.appointment.service.booking.NotInPastRule;
 import com.healthtech.appointment.service.booking.SlotAlignedRule;
 import com.healthtech.appointment.service.booking.WithinOpeningHoursRule;
 import org.junit.jupiter.api.BeforeEach;
@@ -66,10 +69,16 @@ class AppointmentServiceTest {
 
     private AppointmentService appointmentService;
 
-    // The production rules, in their @Order: alignment, then opening hours.
+    // "Now" for booking tests is fixed well before the hardcoded 2026-08-10 slots, so they
+    // stay in the future whenever the suite runs.
+    private static final Clock BOOKING_CLOCK =
+            Clock.fixed(LocalDateTime.of(2026, 8, 1, 12, 0).toInstant(ZoneOffset.UTC), ZoneOffset.UTC);
+
+    // The production rules, in their @Order: alignment, opening hours, not in the past.
     private static List<BookingRule> bookingRules() {
         SlotPolicy slotPolicy = new SlotPolicy();
-        return List.of(new SlotAlignedRule(slotPolicy), new WithinOpeningHoursRule(slotPolicy));
+        return List.of(new SlotAlignedRule(slotPolicy), new WithinOpeningHoursRule(slotPolicy),
+                new NotInPastRule(BOOKING_CLOCK));
     }
 
     @BeforeEach
@@ -81,7 +90,8 @@ class AppointmentServiceTest {
                 validDoctorRepository,
                 bookingRules(),
                 new OutboxEventWriter(outboxRepository, objectMapper),
-                Clock.systemDefaultZone()
+                BOOKING_CLOCK,
+                new ChangePolicyProperties(48)
         );
     }
 
@@ -196,7 +206,7 @@ class AppointmentServiceTest {
                 .status(AppointmentStatus.CANCELLED)
                 .build();
 
-        when(appointmentRepository.findById(appointment.getId())).thenReturn(Optional.of(appointment));
+        when(appointmentRepository.findByIdForUpdate(appointment.getId())).thenReturn(Optional.of(appointment));
         when(appointmentRepository.save(appointment)).thenReturn(appointment);
         when(appointmentMapper.toResponse(appointment)).thenReturn(response);
 
@@ -225,7 +235,7 @@ class AppointmentServiceTest {
                 .status(AppointmentStatus.CONFIRMED)
                 .build();
 
-        when(appointmentRepository.findById(appointment.getId())).thenReturn(Optional.of(appointment));
+        when(appointmentRepository.findByIdForUpdate(appointment.getId())).thenReturn(Optional.of(appointment));
 
         // Act and Assert
         assertThatThrownBy(() -> appointmentService.cancelAppointment(appointment.getId(), callerPatientId))
@@ -240,7 +250,7 @@ class AppointmentServiceTest {
     void cancelAppointment_appointmentNotFound_shouldThrowAppointmentNotFoundException() {
         // Arrange
         UUID appointmentId = UUID.randomUUID();
-        when(appointmentRepository.findById(appointmentId)).thenReturn(Optional.empty());
+        when(appointmentRepository.findByIdForUpdate(appointmentId)).thenReturn(Optional.empty());
 
         // Act and Assert
         assertThatThrownBy(() -> appointmentService.cancelAppointment(appointmentId, UUID.randomUUID()))
@@ -283,6 +293,35 @@ class AppointmentServiceTest {
         assertThatThrownBy(() -> appointmentService.bookAppointment(request, patientId))
                 .isInstanceOf(SlotAlreadyBookedException.class);
 
+        verify(outboxRepository, never()).save(any());
+    }
+
+    @Test
+    void bookAppointment_slotInThePast_shouldThrowSlotInPastAndNotSaveOrPublish() {
+        // Arrange: aligned, within opening hours, but before the fixed "now" (2026-08-01 12:00)
+        UUID patientId = UUID.randomUUID();
+        UUID doctorId = UUID.randomUUID();
+        LocalDateTime pastSlot = LocalDateTime.of(2026, 7, 27, 10, 0);
+        Appointment appointment = Appointment.builder()
+                .patientId(patientId)
+                .doctorId(doctorId)
+                .dateTime(pastSlot)
+                .type(INITIAL_CONSULTATION)
+                .build();
+        AppointmentRequest request = AppointmentRequest.builder()
+                .doctorId(doctorId)
+                .dateTime(pastSlot)
+                .type(INITIAL_CONSULTATION)
+                .build();
+
+        stubValidReadModel(patientId, doctorId, pastSlot);
+        when(appointmentMapper.toEntity(request)).thenReturn(appointment);
+
+        // Act & Assert
+        assertThatThrownBy(() -> appointmentService.bookAppointment(request, patientId))
+                .isInstanceOf(SlotInPastException.class);
+
+        verify(appointmentRepository, never()).saveAndFlush(any());
         verify(outboxRepository, never()).save(any());
     }
 
@@ -366,8 +405,7 @@ class AppointmentServiceTest {
     }
 
     @Test
-    void cancelAppointment_alreadyCancelledAppointment_shouldOverwriteStatusAndPublishEvent() {
-        // Documents current behavior: no guard against double-cancellation.
+    void cancelAppointment_alreadyCancelledAppointment_shouldReturnCurrentStateWithoutSavingOrPublishing() {
         // Arrange
         UUID patientId = UUID.randomUUID();
         Appointment appointment = Appointment.builder()
@@ -377,8 +415,7 @@ class AppointmentServiceTest {
                 .status(AppointmentStatus.CANCELLED)
                 .build();
 
-        when(appointmentRepository.findById(appointment.getId())).thenReturn(Optional.of(appointment));
-        when(appointmentRepository.save(appointment)).thenReturn(appointment);
+        when(appointmentRepository.findByIdForUpdate(appointment.getId())).thenReturn(Optional.of(appointment));
         when(appointmentMapper.toResponse(appointment)).thenReturn(
                 AppointmentResponse.builder().status(AppointmentStatus.CANCELLED).build());
 
@@ -387,10 +424,28 @@ class AppointmentServiceTest {
 
         // Assert
         assertThat(result.getStatus()).isEqualTo(AppointmentStatus.CANCELLED);
-        verify(outboxRepository, times(1)).save(argThat(row ->
-                row.getTopic().equals("appointment.cancelled")
-                        && row.getAggregateId().equals(appointment.getId().toString())
-                        && row.getPayload() != null));
+        verify(appointmentRepository, never()).save(any());
+        verify(outboxRepository, never()).save(any());
+    }
+
+    @Test
+    void cancelAppointment_alreadyCancelledOwnedBySomeoneElse_shouldThrowAccessDenied() {
+        // Arrange: ownership is checked before the idempotent short-circuit
+        Appointment appointment = Appointment.builder()
+                .id(UUID.randomUUID())
+                .patientId(UUID.randomUUID())
+                .type(INITIAL_CONSULTATION)
+                .status(AppointmentStatus.CANCELLED)
+                .build();
+
+        when(appointmentRepository.findByIdForUpdate(appointment.getId())).thenReturn(Optional.of(appointment));
+
+        // Act and Assert
+        assertThatThrownBy(() -> appointmentService.cancelAppointment(appointment.getId(), UUID.randomUUID()))
+                .isInstanceOf(AppointmentAccessDeniedException.class);
+
+        verify(appointmentRepository, never()).save(any());
+        verify(outboxRepository, never()).save(any());
     }
 
     @Test
@@ -431,7 +486,8 @@ class AppointmentServiceTest {
                 validDoctorRepository,
                 bookingRules(),
                 new OutboxEventWriter(outboxRepository, objectMapper),
-                Clock.fixed(now.toInstant(ZoneOffset.UTC), ZoneOffset.UTC)
+                Clock.fixed(now.toInstant(ZoneOffset.UTC), ZoneOffset.UTC),
+                new ChangePolicyProperties(48)
         );
         UUID patientId = UUID.randomUUID();
         Appointment appointment = Appointment.builder()
@@ -440,7 +496,7 @@ class AppointmentServiceTest {
                 .type(INITIAL_CONSULTATION)
                 .status(AppointmentStatus.CONFIRMED)
                 .build();
-        when(appointmentRepository.findById(appointment.getId())).thenReturn(Optional.of(appointment));
+        when(appointmentRepository.findByIdForUpdate(appointment.getId())).thenReturn(Optional.of(appointment));
         when(appointmentRepository.save(appointment)).thenReturn(appointment);
         when(appointmentMapper.toResponse(appointment)).thenReturn(AppointmentResponse.builder().build());
 

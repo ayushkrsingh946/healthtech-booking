@@ -53,7 +53,7 @@ class DoctorSeederTest {
         // Arrange
         stubAllDoctorsMissing();
         when(doctorRepository.saveAndFlush(any(Doctor.class)))
-                .thenAnswer(inv -> inv.getArgument(0));
+                .thenAnswer(inv -> withId(inv.getArgument(0)));
 
         // Act
         doctorSeeder.run();
@@ -64,28 +64,44 @@ class DoctorSeederTest {
     }
 
     @Test
-    void run_doctorMissing_publishesEventKeyedBySavedDoctorIdAndOwnEventId() {
+    void run_doctorSaved_keysEventByDoctorId() {
         // Arrange
         stubAllDoctorsMissing();
-        when(doctorRepository.saveAndFlush(any(Doctor.class))).thenAnswer(inv -> {
-            Doctor doctor = inv.getArgument(0);
-            doctor.setId(UUID.randomUUID());
-            return doctor;
-        });
+        when(doctorRepository.saveAndFlush(any(Doctor.class)))
+                .thenAnswer(inv -> withId(inv.getArgument(0)));
+
+        // Act
+        doctorSeeder.run();
+
+        // Assert: each outbox row's aggregate id (the relay's record key) is the doctor id in its payload
+        ArgumentCaptor<UUID> aggregateIds = ArgumentCaptor.forClass(UUID.class);
+        ArgumentCaptor<DoctorRegistered> events = ArgumentCaptor.forClass(DoctorRegistered.class);
+        verify(eventPublisher, times(6)).publish(
+                eq("doctor.registered"), aggregateIds.capture(), any(), events.capture());
+        for (int i = 0; i < 6; i++) {
+            assertThat(aggregateIds.getAllValues().get(i)).isNotNull()
+                    .isEqualTo(events.getAllValues().get(i).getDoctorId());
+        }
+    }
+
+    @Test
+    void run_doctorSaved_publishesUnderTheEventsOwnEventId() {
+        // Arrange
+        stubAllDoctorsMissing();
+        when(doctorRepository.saveAndFlush(any(Doctor.class)))
+                .thenAnswer(inv -> withId(inv.getArgument(0)));
 
         // Act
         doctorSeeder.run();
 
         // Assert
-        ArgumentCaptor<UUID> aggregateIds = ArgumentCaptor.forClass(UUID.class);
         ArgumentCaptor<UUID> eventIds = ArgumentCaptor.forClass(UUID.class);
         ArgumentCaptor<DoctorRegistered> events = ArgumentCaptor.forClass(DoctorRegistered.class);
         verify(eventPublisher, times(6)).publish(
-                eq("doctor.registered"), aggregateIds.capture(), eventIds.capture(), events.capture());
+                eq("doctor.registered"), any(), eventIds.capture(), events.capture());
         for (int i = 0; i < 6; i++) {
-            DoctorRegistered event = events.getAllValues().get(i);
-            assertThat(aggregateIds.getAllValues().get(i)).isNotNull().isEqualTo(event.getDoctorId());
-            assertThat(eventIds.getAllValues().get(i)).isNotNull().isEqualTo(event.getEventId());
+            assertThat(eventIds.getAllValues().get(i)).isNotNull()
+                    .isEqualTo(events.getAllValues().get(i).getEventId());
         }
     }
 
@@ -94,7 +110,7 @@ class DoctorSeederTest {
         // Arrange
         stubAllDoctorsMissing();
         when(doctorRepository.saveAndFlush(any(Doctor.class)))
-                .thenAnswer(inv -> inv.getArgument(0));
+                .thenAnswer(inv -> withId(inv.getArgument(0)));
         doThrow(new IllegalStateException("outbox write failed"))
                 .when(eventPublisher).publish(anyString(), any(), any(), any());
 
@@ -140,7 +156,7 @@ class DoctorSeederTest {
                 .thenAnswer(inv -> Optional.of(Specialty.builder().name(inv.getArgument(0)).build()));
         when(passwordEncoder.encode(DoctorSeeder.DEMO_PASSWORD)).thenReturn("$2a$hashed");
         when(doctorRepository.saveAndFlush(any(Doctor.class)))
-                .thenAnswer(inv -> inv.getArgument(0));
+                .thenAnswer(inv -> withId(inv.getArgument(0)));
 
         // Act
         doctorSeeder.run();
@@ -149,5 +165,10 @@ class DoctorSeederTest {
         ArgumentCaptor<Doctor> captor = ArgumentCaptor.forClass(Doctor.class);
         verify(doctorRepository, times(6)).saveAndFlush(captor.capture());
         assertThat(captor.getAllValues()).allMatch(d -> "$2a$hashed".equals(d.getPasswordHash()));
+    }
+
+    private static Doctor withId(Doctor doctor) {
+        doctor.setId(UUID.randomUUID());
+        return doctor;
     }
 }
