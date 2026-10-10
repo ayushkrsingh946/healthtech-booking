@@ -82,7 +82,7 @@ rejected at this stage for three reasons. It requires `wal_level=logical`, a rep
 and a persistent replication slot per database; a slot holds WAL until its consumer confirms, so
 a stopped connector accumulates WAL until the disk fills and Postgres refuses writes. That is
 three slots and a real outage mode on a single 30GB volume with no metrics wired up yet. It also
-adds a Kafka Connect process to a host already running five services, three Postgres instances
+adds a Kafka Connect process to a host already running five services, four Postgres instances
 and Kafka. And there is no latency requirement that justifies either cost: the consumers write a
 notification row and a read-model row, where a delay of one poll interval is invisible. The
 outbox table schema is identical under both approaches, so this is a when, not a whether: moving
@@ -129,9 +129,10 @@ CREATE INDEX idx_outbox_published
 ```
 
 As built, Hibernate creates the table from the `OutboxMessage` entity (`ddl-auto: update`);
-`schema-postgresql.sql` in each service holds only the two indexes. The timestamps are therefore
-`LocalDateTime` columns without a time zone, and `created_at` is set by the application
-(`@CreationTimestamp`), not by a database default. The relay orders by `created_at` and the
+each service's `schema-postgresql.sql` adds the two indexes above (appointment-service's file also
+holds its `ux_active_appointment` index). The timestamps are `LocalDateTime` columns without a
+time zone, and `created_at` is set by the application (`@CreationTimestamp`), not by a database
+default. The relay orders by `created_at` and the
 pruning job compares `published_at` to a cutoff, both within one service's clock and time zone.
 
 The `idx_outbox_pending` predicate is not optional. Without it the relay scans an index that grows
