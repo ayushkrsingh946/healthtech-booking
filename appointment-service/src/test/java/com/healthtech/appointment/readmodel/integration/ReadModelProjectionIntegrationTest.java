@@ -3,6 +3,7 @@ package com.healthtech.appointment.readmodel.integration;
 import com.healthtech.appointment.event.DoctorRegistered;
 import com.healthtech.appointment.event.OpeningHoursPayload;
 import com.healthtech.appointment.event.PatientRegistered;
+import com.healthtech.appointment.readmodel.OpeningHours;
 import com.healthtech.appointment.readmodel.ValidDoctor;
 import com.healthtech.appointment.readmodel.ValidDoctorRepository;
 import com.healthtech.appointment.readmodel.ValidPatient;
@@ -134,5 +135,91 @@ public class ReadModelProjectionIntegrationTest {
         assertThat(projected.getLastName()).isEqualTo("Smith");
         assertThat(projected.getOpeningHours()).hasSize(1);
         assertThat(projected.getOpeningHours().iterator().next().getDayOfWeek()).isEqualTo(java.time.DayOfWeek.MONDAY);
+    }
+
+    // The redelivery tests send every record with the same Kafka key, so they share a partition and are
+    // consumed in order. The sentinel is projected only after the duplicate before it was processed.
+
+    @Test
+    void doctorRegisteredEvent_redelivered_leavesOpeningHoursUnchanged() throws Exception {
+        // Arrange
+        UUID doctorId = UUID.randomUUID();
+        DoctorRegistered event = doctorRegistered(doctorId, Set.of(
+                openingHours(java.time.DayOfWeek.MONDAY, 9, 17),
+                openingHours(java.time.DayOfWeek.TUESDAY, 10, 14)));
+        String kafkaKey = doctorId.toString();
+        KafkaTemplate<String, Object> producer = testProducer();
+        producer.send("doctor.registered", kafkaKey, event).get();
+        ValidDoctor first = await(() -> validDoctorRepository.findById(doctorId));
+        Set<OpeningHours> openingHoursAfterFirstDelivery = Set.copyOf(first.getOpeningHours());
+
+        // Act
+        producer.send("doctor.registered", kafkaKey, event).get();
+        UUID sentinelId = UUID.randomUUID();
+        producer.send("doctor.registered", kafkaKey, doctorRegistered(sentinelId, Set.of())).get();
+        await(() -> validDoctorRepository.findById(sentinelId));
+
+        // Assert
+        ValidDoctor afterRedelivery = validDoctorRepository.findById(doctorId).orElseThrow();
+        assertThat(afterRedelivery.getOpeningHours())
+                .hasSize(2)
+                .usingRecursiveFieldByFieldElementComparator()
+                .containsExactlyInAnyOrderElementsOf(openingHoursAfterFirstDelivery);
+    }
+
+    @Test
+    void patientRegisteredEvent_redelivered_leavesProjectionUnchanged() throws Exception {
+        // Arrange
+        UUID patientId = UUID.randomUUID();
+        PatientRegistered event = patientRegistered(patientId, "redelivered.patient@example.com");
+        String kafkaKey = patientId.toString();
+        KafkaTemplate<String, Object> producer = testProducer();
+        producer.send("patient.registered", kafkaKey, event).get();
+        ValidPatient first = await(() -> validPatientRepository.findById(patientId));
+        String emailAfterFirstDelivery = first.getEmail();
+        String firstNameAfterFirstDelivery = first.getFirstName();
+        String lastNameAfterFirstDelivery = first.getLastName();
+
+        // Act
+        producer.send("patient.registered", kafkaKey, event).get();
+        UUID sentinelId = UUID.randomUUID();
+        producer.send("patient.registered", kafkaKey, patientRegistered(sentinelId, "sentinel.patient@example.com")).get();
+        await(() -> validPatientRepository.findById(sentinelId));
+
+        // Assert
+        ValidPatient afterRedelivery = validPatientRepository.findById(patientId).orElseThrow();
+        assertThat(afterRedelivery.getEmail()).isEqualTo(emailAfterFirstDelivery);
+        assertThat(afterRedelivery.getFirstName()).isEqualTo(firstNameAfterFirstDelivery);
+        assertThat(afterRedelivery.getLastName()).isEqualTo(lastNameAfterFirstDelivery);
+    }
+
+    private static DoctorRegistered doctorRegistered(UUID doctorId, Set<OpeningHoursPayload> openingHours) {
+        return DoctorRegistered.builder()
+                .eventId(UUID.randomUUID())
+                .doctorId(doctorId)
+                .firstName("John")
+                .lastName("Smith")
+                .registeredAt(LocalDateTime.now())
+                .openingHours(openingHours)
+                .build();
+    }
+
+    private static OpeningHoursPayload openingHours(java.time.DayOfWeek day, int startHour, int endHour) {
+        return OpeningHoursPayload.builder()
+                .dayOfWeek(day)
+                .startTime(LocalTime.of(startHour, 0))
+                .endTime(LocalTime.of(endHour, 0))
+                .build();
+    }
+
+    private static PatientRegistered patientRegistered(UUID patientId, String email) {
+        return PatientRegistered.builder()
+                .eventId(UUID.randomUUID())
+                .patientId(patientId)
+                .email(email)
+                .firstName("Jane")
+                .lastName("Doe")
+                .registeredAt(LocalDateTime.now())
+                .build();
     }
 }
