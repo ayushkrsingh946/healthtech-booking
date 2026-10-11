@@ -42,11 +42,9 @@ consumer. This is the only option where a failure is both visible and recoverabl
 
 **Duplicate detection key.** `eventId`. It is stable across redelivery, and per ADR-008 it is the
 outbox row id and travels in the payload, so one UUID identifies the event end to end. It is not
-the Kafka record key or a header; consumers read it from the payload. Events published by
-`DoctorSeeder`, which bypasses the outbox (ADR-008, Scope), carry a random `eventId` with no
-outbox row, which is harmless because the read model is a keyed upsert. Business
-keys such as appointment id are not used: the same appointment legitimately produces both a
-booked and a cancelled event.
+the Kafka record key or a header; consumers read it from the payload. Business keys such as
+appointment id are not used: the same appointment legitimately produces both a booked and a
+cancelled event.
 
 **Enforcement.** A unique index on `event_id` in the notification table. The `Notification` entity has no
 explicit `@Table` today, so the table name must be pinned when this is implemented. The database decides

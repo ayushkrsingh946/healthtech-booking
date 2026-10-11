@@ -3,16 +3,17 @@ package com.healthtech.doctor.config;
 import com.healthtech.doctor.domain.Doctor;
 import com.healthtech.doctor.domain.Specialty;
 import com.healthtech.doctor.event.DoctorRegistered;
+import com.healthtech.doctor.event.DomainEventPublisher;
 import com.healthtech.doctor.repository.DoctorRepository;
 import com.healthtech.doctor.repository.SpecialtyRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.transaction.support.TransactionOperations;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -30,18 +31,27 @@ class DoctorSeederTest {
     @Mock private DoctorRepository doctorRepository;
     @Mock private SpecialtyRepository specialtyRepository;
     @Mock private PasswordEncoder passwordEncoder;
-    @Mock private KafkaTemplate<String, DoctorRegistered> kafkaTemplate;
+    @Mock private DomainEventPublisher eventPublisher;
 
-    @InjectMocks
     private DoctorSeeder doctorSeeder;
 
-    @Test
-    void run_allDoctorsMissing_savesSixAndPublishesEventForEach() {
-        // Arrange
+    @BeforeEach
+    void setUp() {
+        doctorSeeder = new DoctorSeeder(doctorRepository, specialtyRepository, passwordEncoder,
+                eventPublisher, TransactionOperations.withoutTransaction());
+    }
+
+    private void stubAllDoctorsMissing() {
         when(doctorRepository.findByEmail(anyString())).thenReturn(Optional.empty());
         when(specialtyRepository.findByName(anyString()))
                 .thenAnswer(inv -> Optional.of(Specialty.builder().name(inv.getArgument(0)).build()));
         when(passwordEncoder.encode(anyString())).thenReturn("$2a$hashed");
+    }
+
+    @Test
+    void run_allDoctorsMissing_savesSixAndPublishesEventForEach() {
+        // Arrange
+        stubAllDoctorsMissing();
         when(doctorRepository.saveAndFlush(any(Doctor.class)))
                 .thenAnswer(inv -> withId(inv.getArgument(0)));
 
@@ -50,29 +60,64 @@ class DoctorSeederTest {
 
         // Assert: one save and one published event per demo doctor
         verify(doctorRepository, times(6)).saveAndFlush(any(Doctor.class));
-        verify(kafkaTemplate, times(6)).send(eq("doctor.registered"), anyString(), any(DoctorRegistered.class));
+        verify(eventPublisher, times(6)).publish(eq("doctor.registered"), any(), any(), any(DoctorRegistered.class));
     }
 
     @Test
     void run_doctorSaved_keysEventByDoctorId() {
         // Arrange
-        when(doctorRepository.findByEmail(anyString())).thenReturn(Optional.empty());
-        when(specialtyRepository.findByName(anyString()))
-                .thenAnswer(inv -> Optional.of(Specialty.builder().name(inv.getArgument(0)).build()));
-        when(passwordEncoder.encode(anyString())).thenReturn("$2a$hashed");
+        stubAllDoctorsMissing();
         when(doctorRepository.saveAndFlush(any(Doctor.class)))
                 .thenAnswer(inv -> withId(inv.getArgument(0)));
 
         // Act
         doctorSeeder.run();
 
-        // Assert: each record's key is the doctor id carried in its payload
-        ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
+        // Assert: each outbox row's aggregate id (the relay's record key) is the doctor id in its payload
+        ArgumentCaptor<UUID> aggregateIds = ArgumentCaptor.forClass(UUID.class);
         ArgumentCaptor<DoctorRegistered> events = ArgumentCaptor.forClass(DoctorRegistered.class);
-        verify(kafkaTemplate, times(6)).send(eq("doctor.registered"), keys.capture(), events.capture());
+        verify(eventPublisher, times(6)).publish(
+                eq("doctor.registered"), aggregateIds.capture(), any(), events.capture());
         for (int i = 0; i < 6; i++) {
-            assertThat(keys.getAllValues().get(i)).isEqualTo(events.getAllValues().get(i).getDoctorId().toString());
+            assertThat(aggregateIds.getAllValues().get(i)).isNotNull()
+                    .isEqualTo(events.getAllValues().get(i).getDoctorId());
         }
+    }
+
+    @Test
+    void run_doctorSaved_publishesUnderTheEventsOwnEventId() {
+        // Arrange
+        stubAllDoctorsMissing();
+        when(doctorRepository.saveAndFlush(any(Doctor.class)))
+                .thenAnswer(inv -> withId(inv.getArgument(0)));
+
+        // Act
+        doctorSeeder.run();
+
+        // Assert
+        ArgumentCaptor<UUID> eventIds = ArgumentCaptor.forClass(UUID.class);
+        ArgumentCaptor<DoctorRegistered> events = ArgumentCaptor.forClass(DoctorRegistered.class);
+        verify(eventPublisher, times(6)).publish(
+                eq("doctor.registered"), any(), eventIds.capture(), events.capture());
+        for (int i = 0; i < 6; i++) {
+            assertThat(eventIds.getAllValues().get(i)).isNotNull()
+                    .isEqualTo(events.getAllValues().get(i).getEventId());
+        }
+    }
+
+    @Test
+    void run_publishFails_propagatesException() {
+        // Arrange
+        stubAllDoctorsMissing();
+        when(doctorRepository.saveAndFlush(any(Doctor.class)))
+                .thenAnswer(inv -> withId(inv.getArgument(0)));
+        doThrow(new IllegalStateException("outbox write failed"))
+                .when(eventPublisher).publish(anyString(), any(), any(), any());
+
+        // Act & Assert
+        assertThatThrownBy(() -> doctorSeeder.run())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("outbox write failed");
     }
 
     @Test
@@ -86,7 +131,7 @@ class DoctorSeederTest {
 
         // Assert: idempotent
         verify(doctorRepository, never()).saveAndFlush(any());
-        verify(kafkaTemplate, never()).send(anyString(), anyString(), any());
+        verify(eventPublisher, never()).publish(anyString(), any(), any(), any());
     }
 
     @Test

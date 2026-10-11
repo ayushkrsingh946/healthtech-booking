@@ -207,8 +207,8 @@ as the change it describes, so the event exists if and only if that change commi
 them published; a row whose send fails stays unpublished and is retried on the next poll, with no retry limit. The
 correlation id is stored on the row and re-attached as the message header. Published rows are pruned after seven days;
 unpublished rows are never pruned. Delivery is therefore at-least-once: if the relay crashes after a send but before
-the row is marked, the event is sent again. The one exception is the demo `DoctorSeeder`, which still publishes
-directly with `KafkaTemplate`. See [ADR-008](docs/adr/ADR-008-transactional-outbox.md).
+the row is marked, the event is sent again. The demo `DoctorSeeder` publishes through the outbox too. See
+[ADR-008](docs/adr/ADR-008-transactional-outbox.md).
 
 **Consumer idempotency (implemented) and failure handling (specified, not implemented).**
 [ADR-009](docs/adr/ADR-009-consumer-idempotency-and-failure-handling.md) is still `Proposed`. Its deduplication part
@@ -364,8 +364,7 @@ real persistence, real RS256 signature validation, and in some cases a real Kafk
   Postgres container and a real Kafka container. The test consumes `patient.registered` from the broker and asserts
   the key, payload and `X-Correlation-Id` header, so it covers the outbox relay end to end.
 * `doctor-service` (`DoctorIntegrationTest`): the same pattern for `doctor.registered`, plus opening-hours validation
-  and login, against real Postgres and Kafka containers. Only `DoctorSeeder`'s direct `KafkaTemplate` is mocked,
-  since the seeder runs at startup and bypasses the outbox. It calls only public endpoints (register, login,
+  and login, against real Postgres and Kafka containers. It calls only public endpoints (register, login,
   browsing), so it sends no token.
 * `appointment-service` (`AppointmentIntegrationTest`, `AppointmentChangeIntegrationTest`,
   `AvailabilityIntegrationTest`): booking, cancellation, changing (including a change racing a cancel and concurrent
@@ -658,8 +657,9 @@ The docs endpoints are public (no token needed to view them). To disable them, e
 `DoctorSeeder` runs at doctor-service startup (after `SpecialtySeeder`, which it depends on) and seeds six demo
 doctors, idempotently (skipped on restart if the email already exists). Each covers multiple specialties and
 languages, with opening hours across several weekdays, so filtering and availability have realistic overlap to
-explore. Each publishes `doctor.registered` on creation, same as a real self-registration, so they're immediately
-bookable through the normal flow.
+explore. Each publishes `doctor.registered` through the transactional outbox on creation, same as a real
+self-registration, so they're bookable through the normal flow as soon as the relay has published the event. If Kafka
+isn't reachable yet when the seeder runs, the events wait in the outbox and are published once it is.
 
 All seeded doctors share one password: **`demo12345`**. Log in as any of them via `POST /api/doctors/login`:
 

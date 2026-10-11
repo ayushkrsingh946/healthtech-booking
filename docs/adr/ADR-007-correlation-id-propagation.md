@@ -71,12 +71,11 @@ on the producing side (patient, doctor and appointment services) and
 services). The Kafka-side code therefore does not depend on the HTTP filter.
 
 Both sides degrade rather than fail when the id is absent. An event written to the
-outbox outside a request context, such as from a test or a scheduled job, has no
-id in MDC and is given a fresh one. The demo data seeder is the exception: it
-publishes directly rather than through the outbox (ADR-008) and sends no header at
-all. A consumer receiving a message with no header, whether published before this
-mechanism existed or by the seeder, generates one rather than rejecting the
-message. This mirrors the filter's own behaviour for a missing inbound header.
+outbox outside a request context, such as from the demo data seeder, a test or a
+scheduled job, has no id in MDC and is given a fresh one. A consumer receiving a
+message with no header, such as one published before this mechanism existed,
+generates one rather than rejecting the message. This mirrors the filter's own
+behaviour for a missing inbound header.
 
 Tracing is deferred on cost and stage, not because it would add nothing. It would
 add real value here: OpenTelemetry propagates context through Kafka headers as
