@@ -85,18 +85,26 @@ processing failure.
 **Retry classification** *(not implemented).* Failures are classified rather than retried uniformly:
 
 * Permanent failures (deserialization errors, validation failures, malformed payloads) go straight
-  to the dead-letter topic. Retrying cannot succeed.
+  to the dead-letter topic (see below). Retrying cannot succeed.
 * Transient failures (database unavailable, timeouts) retry with backoff, then go to the
   dead-letter topic if retries are exhausted.
 
-**Retry strategy** *(not implemented).* Blocking retry for both consumer types. The total backoff
-is kept well below `max.poll.interval.ms`, so retrying never causes the consumer to be evicted from
-the group and trigger a rebalance. Non-blocking retry topics were rejected for now: they add
-topics, headers and reordering for a consumer whose only side effect is a database insert. This is
-revisited for notification-service when it gains an external channel (email or SMS), where a slow
-third-party call makes blocking retry hold up the partition.
+**Retry strategy** *(not implemented).* Blocking retry for both consumer types. A transient failure
+is retried 3 times after the first attempt (4 attempts in all), with exponential backoff of 1 s,
+2 s and 4 s, about 7 s in total. That is far below the default `max.poll.interval.ms` of 5 minutes,
+so retrying never causes the consumer to be evicted from the group and trigger a rebalance; any
+change to these numbers keeps the total well below that limit. Non-blocking retry topics were
+rejected for now: they add topics, headers and reordering for a consumer whose only side effect is
+a database insert. This is revisited for notification-service when it gains an external channel
+(email or SMS), where a slow third-party call makes blocking retry hold up the partition.
 
-**Dead-letter topic** *(not implemented).*
+**Dead-letter topic** *(not implemented).* The dead-letter topic (DLT) is where a record is parked
+when a consumer gives up on it: after the last retry of a transient failure, or immediately for a
+permanent one. Without it the consumer would either retry the record forever and block its
+partition, or drop it silently. Parking it keeps the partition moving and leaves the record
+available for inspection and manual replay. There is one DLT per source topic, named
+`<topic>.DLT` (Spring Kafka's default). The record keeps its key and payload, and the exception
+that caused the failure is added as headers.
 
 * Every publish to the DLT is logged at ERROR, so a dead letter is an alertable event rather than
   a silent one.
