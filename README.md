@@ -211,12 +211,13 @@ the row is marked, the event is sent again. The demo `DoctorSeeder` publishes th
 [ADR-008](docs/adr/ADR-008-transactional-outbox.md).
 
 **Consumer idempotency (implemented) and failure handling (specified, not implemented).**
-[ADR-009](docs/adr/ADR-009-consumer-idempotency-and-failure-handling.md) is still `Proposed`. Its deduplication part
+[ADR-009](docs/adr/ADR-009-consumer-idempotency-and-failure-handling.md) is `Accepted`. Its deduplication part
 exists: `notification-service` stores the event id under a unique index (`ux_notification_event_id`) and
 `NotificationService.record` ignores a violation of that index, so a redelivered `appointment.booked`,
 `appointment.cancelled` or `appointment.changed` is stored once. The `appointment-service` read-model consumers are
-idempotent because they upsert by id. The rest of ADR-009 does not exist in the code yet: `ErrorHandlingDeserializer`,
-retry classification and a dead-letter topic. No consumer has a retry policy or dead-letter topic configured.
+idempotent because they upsert by id, which redelivery tests pin. The rest of ADR-009 does not exist in the code yet:
+`ErrorHandlingDeserializer`, retry classification and a dead-letter topic. No consumer has a retry policy or
+dead-letter topic configured.
 
 ---
 

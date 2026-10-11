@@ -2,28 +2,27 @@
 
 ## Status
 
-Proposed
+Accepted (revised 2026-10-11 - see Revision below)
 
 ## Context
 
 ADR-008 adopts the transactional outbox, which gives at-least-once delivery: the relay can publish
 and then fail before setting `published_at`, and the next poll republishes the same event. Kafka
 itself is also at-least-once, and a consumer rebalance can redeliver. ADR-008 names this ADR as
-the specification of the consumer-side work that decision depends on. It ships as the PR after
-the outbox, not with it.
+the specification of the consumer-side work that decision depends on.
 
-Two consumer groups are affected:
+Before this decision, two consumer groups were affected:
 
-* **notification-service** consumes `appointment.booked` and `appointment.cancelled` and persists
-  a `Notification`. `Notification` does not store `eventId` and has no uniqueness constraint, so
-  a redelivered event creates a second row and, once an external channel exists, a second message
-  to the patient.
-* **appointment-service read models** consume `patient.registered` and `doctor.registered` and
-  upsert by key. These are already idempotent.
+* **notification-service** consumed `appointment.booked` and `appointment.cancelled` and persisted
+  a `Notification`. `Notification` did not store `eventId` and had no uniqueness constraint, so
+  a redelivered event created a second row and, once an external channel exists, would send a
+  second message to the patient.
+* **appointment-service read models** consumed `patient.registered` and `doctor.registered` and
+  upserted by key. These were already idempotent.
 
-Failure handling is also undefined. A message that cannot be deserialized or processed has no
-defined outcome, and a poison pill can block a partition indefinitely. The outbox makes this
-worse, because it will keep redelivering whatever it was handed.
+Failure handling was also undefined. A message that could not be deserialized or processed had no
+defined outcome, and a poison pill could block a partition indefinitely. The outbox makes this
+worse, because it will keep redelivering whatever it is handed.
 
 Three delivery guarantees were considered.
 
@@ -46,9 +45,9 @@ the Kafka record key or a header; consumers read it from the payload. Business k
 appointment id are not used: the same appointment legitimately produces both a booked and a
 cancelled event.
 
-**Enforcement.** A unique index on `event_id` in the notification table. The `Notification` entity has no
-explicit `@Table` today, so the table name must be pinned when this is implemented. The database decides
-whether an event was already processed. Two alternatives were rejected:
+**Enforcement.** A unique index on `event_id` in the notification table. The `Notification` entity pins the
+table name with `@Table(name = "notification")`, which is Hibernate's default, so nothing was renamed. The
+database decides whether an event was already processed. Two alternatives were rejected:
 
 * Check-then-insert (`existsByEventId`, then save). It has a race: during a rebalance two
   consumers can both see "absent" and both insert. The check gives false confidence and still
@@ -66,8 +65,9 @@ poisoned transaction. This is tested against real Postgres, not an in-memory sub
 constraint and flush behavior differ.
 
 **Read models.** No code change. The `patient.registered` and `doctor.registered` consumers are
-idempotent by keyed upsert. This is proven by redelivery tests rather than assumed, including that
-redelivering `DoctorRegistered` leaves `openingHours` unchanged and not duplicated.
+idempotent by keyed upsert. This is proven by redelivery tests rather than assumed
+(`ReadModelProjectionIntegrationTest`): redelivering `DoctorRegistered` leaves `openingHours`
+unchanged and not duplicated, and redelivering `PatientRegistered` leaves one projection.
 
 **Poison pills.** Consumers wrap their deserializers in `ErrorHandlingDeserializer`. Without it a
 deserialization failure is thrown inside the Kafka client before the container's error handler
@@ -102,21 +102,48 @@ call makes blocking retry hold up the partition.
 row is detected through oldest-unpublished age, the signal ADR-008 already identifies, rather
 than a retry counter that would need its own handling policy and its own parked state.
 
+## Revision (2026-10-11)
+
+The status was `Proposed` while this ADR described a state that no longer matched the code:
+deduplication was implemented as part of the change to `appointment.changed` handling, not as the
+follow-up PR the original Context announced. This revision brings the text in line with the code.
+The decisions themselves are unchanged and the status is now `Accepted`.
+
+**Implemented.**
+
+* Deduplication by `eventId` in notification-service, as decided: nullable `event_id` column,
+  unique index `ux_notification_event_id` (`schema-postgresql.sql`), `saveAndFlush`, and a catch
+  of only that index's violation outside the transaction, logged at INFO
+  (`NotificationService.record`). It is tested against real Postgres, including that another
+  integrity violation is not swallowed.
+* The booked, cancelled and `appointment.changed` listeners all go through `record`, so all three
+  are deduplicated. `appointment.changed` did not exist when this ADR was first written.
+* Redelivery tests for the read models, which the original text promised and which did not exist:
+  `ReadModelProjectionIntegrationTest` redelivers `DoctorRegistered` and `PatientRegistered`.
+
+**Accepted, not implemented.** Poison-pill handling (`ErrorHandlingDeserializer`), retry
+classification, blocking retry with backoff, and the dead-letter topic with its ERROR logging,
+3-day retention and manual replay. The consumers in notification-service and appointment-service
+still use a plain `JsonDeserializer` with the default error handling, and none has a retry
+policy or dead-letter topic. These decisions stand and are Phase 3 work. The Consequences about
+failure handling describe the state after that work.
+
 ## Consequences
 
 ### Positive
 
 * Duplicate relay delivery and consumer rebalance redelivery no longer produce duplicate
   notifications. The guarantee lives in the database and holds across consumer instances.
-* A poison pill no longer blocks a partition. It is dead-lettered once, loudly.
-* Permanent failures stop wasting retries, and transient failures recover without intervention.
 * The read-model consumers needed no change, and redelivery tests now pin that property.
+* Once failure handling is implemented (it is not yet, see Revision): a poison pill no longer
+  blocks a partition and is dead-lettered once, loudly; permanent failures stop wasting retries,
+  and transient failures recover without intervention.
 
 ### Negative
 
-* The unique index adds a write-path cost on every notification insert, and existing rows need
-  `event_id` populated or the column added nullable before the constraint can be enforced on
-  historical data.
+* The unique index adds a write-path cost on every notification insert. Rows from before the column
+  existed keep a NULL `event_id`, which a unique index allows, so historical data needed no backfill
+  and those rows are not deduplicated.
 * Blocking retry holds a partition during backoff. Acceptable now, and the reason for the
   revisit trigger once an external channel exists.
 * DLT replay is manual. Someone has to notice the ERROR log and act, and there is no tooling.
