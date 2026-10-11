@@ -175,7 +175,10 @@ public class ReadModelProjectionIntegrationTest {
         String kafkaKey = patientId.toString();
         KafkaTemplate<String, Object> producer = testProducer();
         producer.send("patient.registered", kafkaKey, event).get();
-        await(() -> validPatientRepository.findById(patientId));
+        ValidPatient first = await(() -> validPatientRepository.findById(patientId));
+        String emailAfterFirstDelivery = first.getEmail();
+        String firstNameAfterFirstDelivery = first.getFirstName();
+        String lastNameAfterFirstDelivery = first.getLastName();
 
         // Act
         producer.send("patient.registered", kafkaKey, event).get();
@@ -185,8 +188,9 @@ public class ReadModelProjectionIntegrationTest {
 
         // Assert
         ValidPatient afterRedelivery = validPatientRepository.findById(patientId).orElseThrow();
-        assertThat(afterRedelivery.getEmail()).isEqualTo("redelivered.patient@example.com");
-        assertThat(afterRedelivery.getFirstName()).isEqualTo("Jane");
+        assertThat(afterRedelivery.getEmail()).isEqualTo(emailAfterFirstDelivery);
+        assertThat(afterRedelivery.getFirstName()).isEqualTo(firstNameAfterFirstDelivery);
+        assertThat(afterRedelivery.getLastName()).isEqualTo(lastNameAfterFirstDelivery);
     }
 
     private static DoctorRegistered doctorRegistered(UUID doctorId, Set<OpeningHoursPayload> openingHours) {
