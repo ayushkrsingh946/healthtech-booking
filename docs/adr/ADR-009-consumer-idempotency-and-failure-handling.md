@@ -67,7 +67,7 @@ constraint and flush behavior differ.
 **Read models.** No code change. The `patient.registered` and `doctor.registered` consumers are
 idempotent by keyed upsert. This is proven by redelivery tests rather than assumed
 (`ReadModelProjectionIntegrationTest`): redelivering `DoctorRegistered` leaves `openingHours`
-unchanged and not duplicated, and redelivering `PatientRegistered` leaves one projection.
+unchanged and not duplicated, and redelivering `PatientRegistered` leaves the projection unchanged.
 
 **Poison pills.** Consumers wrap their deserializers in `ErrorHandlingDeserializer`. Without it a
 deserialization failure is thrown inside the Kafka client before the container's error handler
@@ -157,9 +157,11 @@ failure handling describe the state after that work.
   `appointment.booked` and `appointment.cancelled` are separate topics and can be consumed in
   either order. A cancellation can arrive before its booking.
 * **Idempotency does not protect against stale updates.** Deduplication by `eventId` stops the
-  same event being applied twice. It does not stop an older event overwriting newer state. That is
-  harmless while events are create-only, and becomes a real problem the day update events exist,
-  when a version or sequence check will be required.
+  same event being applied twice. It does not stop an older event overwriting newer state.
+  `appointment.changed` is an update event, but notification-service only inserts a notification
+  row for it and overwrites nothing, so an out-of-order event produces notifications in a different
+  order and corrupts no state. It becomes a real problem the day a consumer applies update events
+  to stored state, when a version or sequence check will be required.
 * **Event payloads may carry more personal data than consumers need.** The payloads, and the
   outbox and DLT copies of them, are patient data held for retention periods nobody chose on
   data-minimization grounds. Payload contents should be reviewed against what each consumer

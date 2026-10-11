@@ -28,7 +28,6 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -166,11 +165,10 @@ public class ReadModelProjectionIntegrationTest {
                 .hasSize(2)
                 .usingRecursiveFieldByFieldElementComparator()
                 .containsExactlyInAnyOrderElementsOf(openingHoursAfterFirstDelivery);
-        assertThat(validDoctorRepository.findAllById(List.of(doctorId))).hasSize(1);
     }
 
     @Test
-    void patientRegisteredEvent_redelivered_keepsASingleProjection() throws Exception {
+    void patientRegisteredEvent_redelivered_leavesProjectionUnchanged() throws Exception {
         // Arrange
         UUID patientId = UUID.randomUUID();
         PatientRegistered event = patientRegistered(patientId, "redelivered.patient@example.com");
@@ -188,7 +186,7 @@ public class ReadModelProjectionIntegrationTest {
         // Assert
         ValidPatient afterRedelivery = validPatientRepository.findById(patientId).orElseThrow();
         assertThat(afterRedelivery.getEmail()).isEqualTo("redelivered.patient@example.com");
-        assertThat(validPatientRepository.findAllById(List.of(patientId))).hasSize(1);
+        assertThat(afterRedelivery.getFirstName()).isEqualTo("Jane");
     }
 
     private static DoctorRegistered doctorRegistered(UUID doctorId, Set<OpeningHoursPayload> openingHours) {
