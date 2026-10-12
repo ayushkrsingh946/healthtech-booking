@@ -2,6 +2,7 @@ package com.healthtech.appointment.controller;
 
 import com.healthtech.appointment.exception.AppointmentAccessDeniedException;
 import com.healthtech.appointment.exception.AppointmentNotFoundException;
+import com.healthtech.appointment.exception.CancellationWindowClosedException;
 import com.healthtech.appointment.security.SecurityConfig;
 import com.healthtech.appointment.service.AppointmentService;
 import org.junit.jupiter.api.Test;
@@ -79,6 +80,22 @@ class AppointmentCancelErrorResponseTest {
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(header().string("Retry-After", "1"))
                 .andExpect(jsonPath("$.title").value("Appointment Busy"));
+    }
+
+    @Test
+    void cancelAppointment_insideNoticePeriod_returns409CancellationWindowClosed() throws Exception {
+        // Arrange
+        UUID appointmentId = UUID.randomUUID();
+        UUID patientId = UUID.randomUUID();
+        when(appointmentService.cancelAppointment(appointmentId, patientId))
+                .thenThrow(new CancellationWindowClosedException(48));
+
+        // Act & Assert
+        mockMvc.perform(put("/api/appointments/{id}/cancel", appointmentId).with(patientToken(patientId)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.title").value("Cancellation Window Closed"))
+                .andExpect(jsonPath("$.detail").value("An appointment can only be cancelled up to 48 hours before it starts"));
     }
 
     @Test

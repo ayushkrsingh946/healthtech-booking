@@ -279,4 +279,67 @@ public class AppointmentIntegrationTest extends AbstractAppointmentApiTest {
         assertThat(problem.get("title").asText()).isEqualTo("Appointment Not Found");
         assertThat(problem.get("detail").asText()).contains(nonexistentId.toString());
     }
+
+    // Saved straight to the repository, so the start time can be relative to now and need not be on the slot grid.
+    private Appointment saveAppointmentAt(UUID patientId, LocalDateTime dateTime, AppointmentStatus status) {
+        return appointmentRepository.save(Appointment.builder()
+                .patientId(patientId)
+                .doctorId(UUID.randomUUID())
+                .dateTime(dateTime)
+                .duration(30)
+                .type(AppointmentType.INITIAL_CONSULTATION)
+                .status(status)
+                .build());
+    }
+
+    @Test
+    void cancelAppointment_startsInLessThan48Hours_returns409CancellationWindowClosed() throws Exception {
+        // Arrange
+        ValidPatient patient = seedPatient();
+        Appointment soon = saveAppointmentAt(patient.getPatientId(), LocalDateTime.now().plusHours(47),
+                AppointmentStatus.CONFIRMED);
+
+        // Act
+        ResponseEntity<String> response = putCancel(patientHeaders(patient.getPatientId()), soon.getId());
+
+        // Assert
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        JsonNode problem = new ObjectMapper().readTree(response.getBody());
+        assertThat(problem.get("status").asInt()).isEqualTo(409);
+        assertThat(problem.get("title").asText()).isEqualTo("Cancellation Window Closed");
+        assertThat(problem.get("detail").asText()).contains("48 hours");
+    }
+
+    @Test
+    void cancelAppointment_startsInLessThan48Hours_staysConfirmedAndPublishesNothing() {
+        // Arrange
+        ValidPatient patient = seedPatient();
+        Appointment soon = saveAppointmentAt(patient.getPatientId(), LocalDateTime.now().plusHours(47),
+                AppointmentStatus.CONFIRMED);
+
+        // Act
+        putCancel(patientHeaders(patient.getPatientId()), soon.getId());
+
+        // Assert
+        assertThat(appointmentRepository.findById(soon.getId()).orElseThrow().getStatus())
+                .isEqualTo(AppointmentStatus.CONFIRMED);
+        assertThat(cancelledEventCount(soon.getId())).isZero();
+    }
+
+    @Test
+    void cancelAppointment_alreadyCancelledInsideNoticePeriod_returns200() {
+        // Arrange
+        ValidPatient patient = seedPatient();
+        Appointment cancelled = saveAppointmentAt(patient.getPatientId(), LocalDateTime.now().plusHours(1),
+                AppointmentStatus.CANCELLED);
+
+        // Act
+        ResponseEntity<AppointmentResponse> response = restTemplate.exchange(
+                "/api/appointments/" + cancelled.getId() + "/cancel", HttpMethod.PUT,
+                new HttpEntity<>(patientHeaders(patient.getPatientId())), AppointmentResponse.class);
+
+        // Assert
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody().getStatus()).isEqualTo(AppointmentStatus.CANCELLED);
+    }
 }

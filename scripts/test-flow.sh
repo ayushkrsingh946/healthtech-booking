@@ -5,7 +5,8 @@
 # Flow: register patient -> register doctor -> read availability -> book a slot
 #       -> confirm slot disappears -> double-book (rejected) -> change the
 #       appointment (purpose and time) -> confirm old slot returns and new one
-#       is taken -> cancel -> confirm slot reappears.
+#       is taken -> cancel -> confirm slot reappears -> book a slot inside the
+#       48h notice period and confirm its cancel is refused (409).
 #
 # All calls go through the API Gateway (8080). Booking and cancel require a
 # patient JWT (Authorization: Bearer). The patient identity is taken from the
@@ -17,7 +18,7 @@ set -euo pipefail
 
 GATEWAY="http://localhost:8080"
 BOOKING_DATE="$(date -d 'next monday' +%Y-%m-%d 2>/dev/null || date -v+mon +%Y-%m-%d)"
-# Changing an appointment is only allowed more than 48h ahead; on a Sunday "next monday" is tomorrow, so use the Monday after.
+# Changing and cancelling are only allowed 48h ahead; on a Sunday "next monday" is tomorrow, so use the Monday after.
 BOOKING_EPOCH="$(date -d "$BOOKING_DATE" +%s 2>/dev/null || date -j -f %Y-%m-%d "$BOOKING_DATE" +%s)"
 if [ $(( (BOOKING_EPOCH - $(date +%s)) / 3600 )) -lt 72 ]; then
   BOOKING_DATE="$(date -d "$BOOKING_DATE + 7 days" +%Y-%m-%d 2>/dev/null || date -j -v+7d -f %Y-%m-%d "$BOOKING_DATE" +%Y-%m-%d)"
@@ -54,7 +55,15 @@ DOCTOR_RESP="$(curl -s -X POST "$GATEWAY/api/doctors/register" \
     "phoneNumber": "+49 30 1234567",
     "address": { "street": "Friedrichstrasse", "houseNumber": "200", "postalCode": "10117", "city": "Berlin", "country": "Germany" },
     "specialtyIds": ["'"$SPECIALTY_ID"'"],
-    "openingHours": [ { "dayOfWeek": "MONDAY", "startTime": "09:00", "endTime": "17:00" } ],
+    "openingHours": [
+      { "dayOfWeek": "MONDAY", "startTime": "09:00", "endTime": "17:00" },
+      { "dayOfWeek": "TUESDAY", "startTime": "09:00", "endTime": "17:00" },
+      { "dayOfWeek": "WEDNESDAY", "startTime": "09:00", "endTime": "17:00" },
+      { "dayOfWeek": "THURSDAY", "startTime": "09:00", "endTime": "17:00" },
+      { "dayOfWeek": "FRIDAY", "startTime": "09:00", "endTime": "17:00" },
+      { "dayOfWeek": "SATURDAY", "startTime": "09:00", "endTime": "17:00" },
+      { "dayOfWeek": "SUNDAY", "startTime": "09:00", "endTime": "17:00" }
+    ],
     "languages": ["ENGLISH"]
   }')"
 DOCTOR_ID="$(echo "$DOCTOR_RESP" | jq -r '.id')"
@@ -132,6 +141,28 @@ if echo "$AVAIL_CANCELLED" | jq -e --arg s "$SLOT" '.availableSlots | index($s)'
 else
   fail "slot $SLOT did NOT reappear after cancellation"
 fi
+
+section "Cancel inside the 48h notice period (expect 409 Cancellation Window Closed)"
+# Tomorrow's slots start less than 48h from now. The doctor is open every day, so tomorrow has slots.
+SOON_DATE="$(date -d 'tomorrow' +%Y-%m-%d 2>/dev/null || date -v+1d +%Y-%m-%d)"
+SOON_SLOT="$(curl -s "$GATEWAY/api/availability?doctorId=$DOCTOR_ID&date=$SOON_DATE" | jq -r '.availableSlots[0]')"
+[ "$SOON_SLOT" != "null" ] && [ -n "$SOON_SLOT" ] || fail "no available slot on $SOON_DATE"
+SOON_RESP="$(curl -s -X POST "$GATEWAY/api/appointments" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{ "doctorId": "'"$DOCTOR_ID"'", "dateTime": "'"$SOON_SLOT"'", "type": "INITIAL_CONSULTATION" }')"
+SOON_ID="$(echo "$SOON_RESP" | jq -r '.id')"
+[ "$SOON_ID" != "null" ] && [ -n "$SOON_ID" ] || fail "booking $SOON_SLOT failed: $SOON_RESP"
+SOON_CANCEL="$(curl -s -w '\n%{http_code}' -X PUT "$GATEWAY/api/appointments/$SOON_ID/cancel" \
+  -H "Authorization: Bearer $TOKEN")"
+SOON_CODE="$(echo "$SOON_CANCEL" | tail -n1)"
+SOON_TITLE="$(echo "$SOON_CANCEL" | sed '$d' | jq -r '.title')"
+[ "$SOON_CODE" = "409" ] && [ "$SOON_TITLE" = "Cancellation Window Closed" ] \
+  && ok "cancel of $SOON_SLOT refused with 409 $SOON_TITLE" \
+  || fail "cancel of $SOON_SLOT returned $SOON_CODE $SOON_TITLE (expected 409 Cancellation Window Closed)"
+SOON_STATUS="$(curl -s "$GATEWAY/api/appointments" -H "Authorization: Bearer $TOKEN" \
+  | jq -r --arg id "$SOON_ID" '.[] | select(.id == $id) | .status')"
+[ "$SOON_STATUS" = "CONFIRMED" ] && ok "appointment still CONFIRMED" || fail "appointment status is $SOON_STATUS (expected CONFIRMED)"
 
 section "Done"
 ok "full booking pipeline exercised"

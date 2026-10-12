@@ -125,10 +125,15 @@ is computed from appointment data plus doctor opening hours.
   checks suffer from.
 * Cancellation is a **soft delete** (status set to `CANCELLED`), so the audit trail is preserved and the slot becomes
   bookable again. The partial index is what allows a cancelled slot to be re-booked without losing the record.
+* **Cancelling needs the same notice as changing.** `PUT /api/appointments/{id}/cancel` is allowed up to
+  `appointment.change.min-notice-hours` (default 48) before the appointment's start; exactly 48 hours is allowed. Inside
+  that window, and once the appointment has started, it returns `409` (`Cancellation Window Closed`) and changes
+  nothing. The checks run in this order: not found (`404`), not the owner (`403`), already cancelled (`200` no-op), notice
+  period (`409`).
 * **Cancel is idempotent.** Cancelling an already-cancelled appointment returns `200` with the current state and
-  publishes no new `appointment.cancelled` event. Concurrent cancels of one appointment are serialized by a row lock. If
-  another request holds the row for more than 3 seconds, the endpoint returns `503` (`Appointment Busy`) with
-  `Retry-After: 1`; the cancel can be retried safely.
+  publishes no new `appointment.cancelled` event, even inside the notice period. Concurrent cancels of one appointment
+  are serialized by a row lock. If another request holds the row for more than 3 seconds, the endpoint returns `503`
+  (`Appointment Busy`) with `Retry-After: 1`; the cancel can be retried safely.
 * **Changing an appointment** is `PATCH /api/appointments/{id}` with a partial body: any of `type`, `dateTime` and
   `notes` (at least one; an empty `notes` string clears the notes). It is allowed up to
   `appointment.change.min-notice-hours` (default 48) before the appointment's current start; inside that window it
@@ -138,8 +143,11 @@ is computed from appointment data plus doctor opening hours.
   Like cancel it takes the row lock, so it cannot race a cancel, and returns the same `503` when the lock is not
   granted within 3 seconds. When `type` or `dateTime` actually changes it publishes `appointment.changed`; notes-only
   and no-op changes publish nothing.
-  The frontend does not open the change form for an appointment starting in less than 48 hours: it shows a pop-up that
-  it can no longer be changed (it also shows it when the server answers `Change Window Closed`).
+  The frontend does not open the change form or send the cancel for an appointment starting in less than 48 hours: it
+  shows a pop-up that it can no longer be changed or cancelled and asks the patient to call the clinic, with the
+  doctor's phone number from `GET /api/doctors/{id}`. It shows the same pop-up when the server answers
+  `Change Window Closed` or `Cancellation Window Closed`. If the doctor could not be loaded, the pop-up links to the
+  doctor's page instead of showing a number.
 
 ---
 
@@ -249,6 +257,7 @@ Documented in [`docs/adr/`](docs/adr/):
 | Cancelling an already-cancelled appointment        | `200` with the current state; no new event                                              |
 | Cancel while the appointment row is locked > 3s    | `503` problem+json (`Appointment Busy`) with `Retry-After: 1`; safe to retry            |
 | Changing an appointment that starts in < 48h       | `409` problem+json (`Change Window Closed`); no state change                            |
+| Cancelling an appointment that starts in < 48h     | `409` problem+json (`Cancellation Window Closed`); no state change, no event            |
 | Changing a cancelled appointment                   | `409` problem+json (`Appointment Not Changeable`); no state change                      |
 | Changing to a taken slot                           | `409` (`Slot Already Booked`); the appointment keeps its old time                       |
 | Changing to a time outside opening hours, off the grid or in the past | `400`; the appointment keeps its old time                    |
@@ -270,11 +279,12 @@ Documented in [`docs/adr/`](docs/adr/):
   scale. Browsing (`GET`)
   stays public by design.
 * **Refresh tokens** are not implemented; access tokens are valid for one hour.
-* **The 48-hour change rule in the UI assumes one region.** The frontend decides whether to open the change form from
-  a constant (`CHANGE_MIN_NOTICE_HOURS`, to be kept in sync with `appointment.change.min-notice-hours`) and compares the
-  appointment's zone-less local date-time with the browser's clock, so it assumes the browser and appointment-service
-  are in the same time zone; the server's `409 Change Window Closed` stays the authority but never sees a change the UI
-  blocked. Planned fix if the application becomes multi-region: the server returns a `changeableUntil` field on appointment
+* **The 48-hour change and cancel rule in the UI assumes one region.** The frontend decides whether to open the change
+  form or send a cancel from a constant (`CHANGE_MIN_NOTICE_HOURS`, to be kept in sync with
+  `appointment.change.min-notice-hours`) and compares the appointment's zone-less local date-time with the browser's
+  clock, so it assumes the browser and appointment-service are in the same time zone; the server's `409`
+  (`Change Window Closed` / `Cancellation Window Closed`) stays the authority but never sees a request the UI blocked.
+  Planned fix if the application becomes multi-region: the server returns a `changeableUntil` field on appointment
   responses, an absolute UTC timestamp computed from its clock and the property, and the UI only compares it with the
   current time. That removes both the constant and the time-zone assumption (additive API change, so it needs approval).
 * **Service discovery** is static per [ADR-006](docs/adr/ADR-006-service-discovery.md); Eureka/Consul is Phase 3 work
@@ -527,7 +537,8 @@ bash scripts/test-flow.sh
 
 It registers a patient and doctor, reads availability, books a slot, confirms the slot disappears, rejects a
 double-booking, changes the appointment (purpose and time), confirms the old slot is free and the new one taken,
-rejects an empty change, cancels, and confirms the slot reappears.
+rejects an empty change, cancels, and confirms the slot reappears. Last, it books a slot tomorrow and confirms its
+cancel is refused with `409` (`Cancellation Window Closed`).
 
 The individual calls (all through the gateway at `8080`) below show the API contract.
 
@@ -610,7 +621,7 @@ curl -X PATCH http://localhost:8080/api/appointments/<appointment-id> \
   -d '{ "dateTime": "2026-07-13T11:00:00", "type": "FOLLOW_UP" }'
 ```
 
-Cancel an appointment (requires the owning patient's token):
+Cancel an appointment (requires the owning patient's token; refused with `409` less than 48 hours before it starts):
 
 ```bash
 curl -X PUT http://localhost:8080/api/appointments/<appointment-id>/cancel \

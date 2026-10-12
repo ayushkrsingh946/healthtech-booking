@@ -105,6 +105,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problemDetail;
     }
 
+    @ExceptionHandler(CancellationWindowClosedException.class)
+    public ProblemDetail handleCancellationWindowClosedException(CancellationWindowClosedException ex) {
+        log.warn("{}, status 409", ex.getMessage());
+        ProblemDetail problemDetail = forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        problemDetail.setTitle("Cancellation Window Closed");
+        return problemDetail;
+    }
+
     // The appointment row lock was not granted within the repository's query timeout.
     @ExceptionHandler({QueryTimeoutException.class, PessimisticLockingFailureException.class})
     public ResponseEntity<ProblemDetail> handleLockNotAcquired(RuntimeException ex) {

@@ -101,6 +101,11 @@ public class AppointmentService {
         if (appointment.getStatus() == AppointmentStatus.CANCELLED) {
             return appointmentMapper.toResponse(appointment);
         }
+        LocalDateTime now = LocalDateTime.now(clock);
+        int minNoticeHours = changePolicy.minNoticeHours();
+        if (appointment.getDateTime().isBefore(now.plusHours(minNoticeHours))) {
+            throw new CancellationWindowClosedException(minNoticeHours);
+        }
         appointment.setStatus(AppointmentStatus.CANCELLED);
         Appointment saved = appointmentRepository.save(appointment);
         AppointmentCancelled event = AppointmentCancelled.builder()
@@ -110,7 +115,7 @@ public class AppointmentService {
                 .doctorId(saved.getDoctorId())
                 .duration(saved.getDuration())
                 .dateTime(saved.getDateTime())
-                .cancelledAt(LocalDateTime.now(clock))
+                .cancelledAt(now)
                 .build();
 
         eventPublisher.publish("appointment.cancelled", saved.getId(), event.getEventId(), event);

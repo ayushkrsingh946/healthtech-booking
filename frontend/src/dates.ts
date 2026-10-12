@@ -6,7 +6,7 @@ export function todayIsoDate(): string {
 
 // dateTime is the server's local date-time without an offset, which the Date constructor reads as the browser's local
 // time, so this assumes the browser and appointment-service are in the same time zone.
-export function isWithinChangeNotice(dateTime: string): boolean {
+export function isWithinNoticePeriod(dateTime: string): boolean {
   const startsAt = new Date(dateTime).getTime();
   return startsAt - Date.now() < CHANGE_MIN_NOTICE_HOURS * 60 * 60 * 1000;
 }

@@ -105,6 +105,17 @@ class OpenApiDocsTest {
     }
 
     @Test
+    void apiDocs_cancelDocumentsCancellationWindow409WithProblemBody() throws Exception {
+        // Arrange
+        String cancel = "$.paths['/api/appointments/{id}/cancel'].put";
+
+        // Act & Assert
+        mockMvc.perform(get("/v3/api-docs"))
+                .andExpect(jsonPath(cancel + ".responses['409'].content['application/problem+json']"
+                        + ".schema['$ref']").value(PROBLEM_REF));
+    }
+
+    @Test
     void apiDocs_changeDocumentsOkAndEveryDeclaredErrorWithProblemBody() throws Exception {
         String change = "$.paths['/api/appointments/{id}'].patch";
         mockMvc.perform(get("/v3/api-docs"))

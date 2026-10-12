@@ -200,6 +200,7 @@ class AppointmentServiceTest {
                 .type(INITIAL_CONSULTATION)
                 .id(UUID.randomUUID())
                 .patientId(patientId)
+                .dateTime(LocalDateTime.of(2026, 8, 10, 10, 0))
                 .build();
 
         AppointmentResponse response = AppointmentResponse.builder()
@@ -495,6 +496,7 @@ class AppointmentServiceTest {
                 .patientId(patientId)
                 .type(INITIAL_CONSULTATION)
                 .status(AppointmentStatus.CONFIRMED)
+                .dateTime(now.plusDays(7))
                 .build();
         when(appointmentRepository.findByIdForUpdate(appointment.getId())).thenReturn(Optional.of(appointment));
         when(appointmentRepository.save(appointment)).thenReturn(appointment);

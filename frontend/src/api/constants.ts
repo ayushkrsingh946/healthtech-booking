@@ -35,9 +35,9 @@ export const APPOINTMENT_TYPES: { value: AppointmentType; label: string }[] = [
   { value: "VACCINATION", label: "Vaccination" },
 ];
 
-// Keep in sync with appointment.change.min-notice-hours in appointment-service. The server decides: it answers 409
-// "Change Window Closed" when this check lets a change through that it refuses, but a change this check blocks is
-// never sent, so a smaller server value or a different time zone is not noticed on the blocking side. If the app
-// becomes multi-region, replace this with a server-provided `changeableUntil` UTC timestamp (see README, Current
-// Limitations).
+// Keep in sync with appointment.change.min-notice-hours in appointment-service, which applies to both change and
+// cancel. The server decides: it answers 409 "Change Window Closed" or "Cancellation Window Closed" when this check
+// lets a request through that it refuses, but a request this check blocks is never sent, so a smaller server value or
+// a different time zone is not noticed on the blocking side. If the app becomes multi-region, replace this with a
+// server-provided `changeableUntil` UTC timestamp (see README, Current Limitations).
 export const CHANGE_MIN_NOTICE_HOURS = 48;
