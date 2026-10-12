@@ -526,14 +526,15 @@ than 1.5x where the process itself needs more room:
 | notification-service  | 377 MiB               | 640m        | same                                                                  |
 | api-gateway           | 278 MiB               | 512m        | same                                                                  |
 | kafka                 | 407 MiB               | 1g          | `KAFKA_HEAP_OPTS=-Xms256m -Xmx512m` (default is 1 GB); heap fills over time (an unconfigured broker reached 1.16 GiB after 31 h), so the limit is sized to the heap cap plus overhead, not to the early reading |
-| zookeeper             | 126 MiB               | 384m        | `KAFKA_HEAP_OPTS=-Xms128m -Xmx256m`                                   |
+| zookeeper             | 126 MiB               | 384m        | `KAFKA_HEAP_OPTS=-Xms128m -Xmx256m`; limit is the heap cap plus JVM overhead  |
 | PostgreSQL (x4)       | 50 to 52 MiB each     | 192m        | Above 1.5x because the default `shared_buffers` is 128 MB             |
-| kafka-ui (`tools`)    | 301 MiB               | 512m        |                                                                       |
-| frontend              | 9 MiB                 | 32m         | nginx                                                                 |
+| kafka-ui (`tools`)    | 301 MiB               | 512m        | Default heap is 25% of the limit; it served topics at that size |
+| frontend              | 9 MiB                 | 32m         | Static files only; 32m is the smallest round value that fits            |
 
-With the limits and heap caps in place, the same run settles at about 40 to 50% of each service's limit. If you add
-load or data and a container is killed (`docker inspect -f '{{.State.OOMKilled}}' <container>`), raise its `mem_limit`
-in `docker-compose.yml`; `docker stats` shows the current use.
+With the limits and heap caps in place, the same run settles at about 40 to 50% of each application service's limit
+(api-gateway 207 MiB, appointment 387, doctor 357, patient 339, notification 286), and Kafka UI stays near 305 MiB. If
+you add load or data and a container is killed (`docker inspect -f '{{.State.OOMKilled}}' <container>`), raise its
+`mem_limit` in `docker-compose.yml`; `docker stats` shows the current use.
 
 Option B reads two optional environment variables:
 
@@ -543,6 +544,8 @@ Option B reads two optional environment variables:
 | `IMAGE_REGISTRY` | `ghcr.io/ysfwrda` | Pull from a fork's registry, e.g. `ghcr.io/<your-user>`     |
 
 Note that Option B runs the code published from `main`, not your working tree; use Option A to test local changes.
+Images published before the memory limits were added lack `-XX:MaxRAMPercentage=65`, so until CI republishes them the
+JVM heap defaults to 25% of the container limit; the limits themselves still apply.
 Without the override file, the images are never pulled and `docker compose up -d --build` always builds from source.
 
 To run a single service on the host against the infrastructure for development, start only the infrastructure and run
@@ -715,7 +718,8 @@ curl -X POST http://localhost:8080/api/doctors/login \
 
 ### Step 5 — Verify the Event Flow
 
-* Kafka UI (`http://localhost:8090`, start it with `docker compose --profile tools up -d`): confirm `patient.registered`, `doctor.registered`, `appointment.booked`,
+* Kafka UI (`http://localhost:8090`, start it with `docker compose --profile tools up -d`): confirm
+  `patient.registered`, `doctor.registered`, `appointment.booked`,
   `appointment.cancelled` and `appointment.changed` have messages.
 * Appointment Service: confirm `valid_patient` / `valid_doctor` rows appear in `appointment_db` (the read-model).
 * Notification Service: confirm the booking event was consumed and a notification record was saved in `notification_db`.
@@ -769,7 +773,7 @@ healthtech-booking/
 | Resource             | Host Port | Notes                      |
 |----------------------|-----------|----------------------------|
 | Kafka                | 9092      | PLAINTEXT (host access)    |
-| Kafka UI (`tools` profile) | 8090 | Browse topics and messages |
+| Kafka UI (`tools`)    | 8090      | Browse topics and messages |
 | Swagger UI (gateway) | 8080      | `/swagger-ui.html`, all APIs |
 | PostgreSQL (appt)    | 5432      | `appointment_db`           |
 | PostgreSQL (notif)   | 5433      | `notification_db`          |
