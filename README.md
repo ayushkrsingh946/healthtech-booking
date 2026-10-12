@@ -30,30 +30,28 @@ Server) · MapStruct · JWT (RS256) · springdoc-openapi (Swagger UI) · Docker 
 ## Architecture Overview
 
 ```mermaid
-flowchart LR
-    user(["Browser"]) --> fe["frontend<br/>nginx :5173"]
-    user -->|"all API traffic"| gw["api-gateway :8080<br/>routing, JWT edge check, CORS"]
+flowchart TB
+    browser(["Browser · React SPA"])
+    gw["api-gateway<br/>routing · JWT edge check"]
+    patient["patient-service<br/>accounts · PATIENT tokens"]
+    doctor["doctor-service<br/>profiles · DOCTOR tokens"]
+    appt["appointment-service<br/>booking · availability"]
+    kafka{{"Apache Kafka"}}
+    notif["notification-service<br/>notification records"]
 
-    gw --> patient["patient-service :8083<br/>auth, issues PATIENT JWTs"]
-    gw --> doctor["doctor-service :8084<br/>profiles, issues DOCTOR JWTs"]
-    gw --> appt["appointment-service :8081<br/>booking, slots, read-model"]
-
-    patient --- dbp[("patient_db")]
-    doctor --- dbd[("doctor_db")]
-    appt --- dba[("appointment_db")]
-    notif["notification-service :8082"] --- dbn[("notification_db")]
-
-    patient -.->|"patient.registered"| kafka{{"Apache Kafka"}}
+    browser -->|"REST"| gw
+    gw --> patient & doctor & appt
+    patient -.->|"patient.registered"| kafka
     doctor -.->|"doctor.registered"| kafka
-    appt -.->|"appointment.booked<br/>cancelled, changed"| kafka
-    kafka -.->|"patient.registered<br/>doctor.registered"| appt
+    appt <-.->|"publishes appointment.*<br/>consumes *.registered"| kafka
     kafka -.->|"appointment.*"| notif
 ```
 
-Solid arrows are HTTP or a service's own database; dotted arrows are Kafka events, written through each producer's
-transactional outbox (see Reliability). Appointment Service consumes `patient.registered` and `doctor.registered` to
-build a local read-model (see Cross-Service Validation below), and publishes booking events that Notification Service
-consumes. The browser reaches every service only through the gateway, and no service calls another directly.
+Solid arrows are HTTP; dotted arrows are Kafka events, written through each producer's transactional outbox (see
+Reliability). Each service owns its own PostgreSQL database (ADR-003). Appointment Service consumes
+`patient.registered` and `doctor.registered` to build a local read-model (see Cross-Service Validation below), and
+publishes booking events that Notification Service consumes. The browser reaches every service only through the
+gateway, and no service calls another directly.
 
 More diagrams (event flow and outbox, booking sequence, key distribution, gateway routes) are in
 [`docs/architecture/architecture.md`](docs/architecture/architecture.md).
