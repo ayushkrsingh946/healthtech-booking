@@ -27,39 +27,36 @@ Server) · MapStruct · JWT (RS256) · springdoc-openapi (Swagger UI) · Docker 
 
 ---
 
-## Architecture Overview (Phase 2)
+## Architecture Overview
 
-```
-        ┌─────────────┐          ┌───────────────────┐
-        │   Client    │─────────▶│    API Gateway     │  (single entry, routing)
-        └─────────────┘          └─────────┬─────────┘
-                                           │
-        ┌──────────────────────────────────┼──────────────────────────────────┐
-        │                                  │                                  │
-        ▼                                  ▼                                  ▼
-┌─────────────────┐              ┌────────────────────┐              ┌────────────────┐
-│ Patient Service │              │  Appointment Svc   │              │ Doctor Service │
-│ auth, JWT issue │              │ booking, slots,    │              │ profiles,      │
-│ (RS256)         │              │ read-model,        │              │ specialties,   │
-│                 │              │ JWT validation     │              │ filtering      │
-└────────┬────────┘              └─────────┬──────────┘              └───────┬────────┘
-         │ patient.registered              │ appointment.booked              │ doctor.registered
-         │                                 │ appointment.cancelled / changed │
-         └─────────────────────────────────┼─────────────────────────────────┘
-                                           ▼
-                                   ┌────────────────┐
-                                   │  Apache Kafka  │
-                                   └───────┬────────┘
-                                           │ appointment.booked / cancelled / changed
-                                           ▼
-                                 ┌───────────────────┐
-                                 │ Notification Svc  │
-                                 └───────────────────┘
+```mermaid
+flowchart LR
+    user(["Browser"]) --> fe["frontend<br/>nginx :5173"]
+    user -->|"all API traffic"| gw["api-gateway :8080<br/>routing, JWT edge check, CORS"]
+
+    gw --> patient["patient-service :8083<br/>auth, issues PATIENT JWTs"]
+    gw --> doctor["doctor-service :8084<br/>profiles, issues DOCTOR JWTs"]
+    gw --> appt["appointment-service :8081<br/>booking, slots, read-model"]
+
+    patient --- dbp[("patient_db")]
+    doctor --- dbd[("doctor_db")]
+    appt --- dba[("appointment_db")]
+    notif["notification-service :8082"] --- dbn[("notification_db")]
+
+    patient -.->|"patient.registered"| kafka{{"Apache Kafka"}}
+    doctor -.->|"doctor.registered"| kafka
+    appt -.->|"appointment.booked<br/>cancelled, changed"| kafka
+    kafka -.->|"patient.registered<br/>doctor.registered"| appt
+    kafka -.->|"appointment.*"| notif
 ```
 
-Appointment Service consumes `patient.registered` and `doctor.registered` to build a
-local read-model (see Cross-Service Validation below), and publishes booking events that
-Notification Service consumes.
+Solid arrows are HTTP or a service's own database; dotted arrows are Kafka events, written through each producer's
+transactional outbox (see Reliability). Appointment Service consumes `patient.registered` and `doctor.registered` to
+build a local read-model (see Cross-Service Validation below), and publishes booking events that Notification Service
+consumes. The browser reaches every service only through the gateway, and no service calls another directly.
+
+More diagrams (event flow and outbox, booking sequence, key distribution, gateway routes) are in
+[`docs/architecture/architecture.md`](docs/architecture/architecture.md).
 
 ---
 
