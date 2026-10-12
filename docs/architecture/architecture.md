@@ -27,7 +27,7 @@ flowchart LR
     end
 
     subgraph services["Application services (Spring Boot)"]
-        patient["<b>patient-service</b> :8083<br/>registration, login,<br/>issues PATIENT JWTs"]
+        patient["<b>patient-service</b> :8083<br/>registration, login, profile,<br/>issues PATIENT JWTs"]
         doctor["<b>doctor-service</b> :8084<br/>registration, login, profiles,<br/>opening hours, issues DOCTOR JWTs"]
         appt["<b>appointment-service</b> :8081<br/>booking, change, cancel, availability,<br/>read-model of patients and doctors"]
         notif["<b>notification-service</b> :8082<br/>records a notification<br/>per appointment event"]
@@ -81,8 +81,9 @@ flowchart LR
 
 **How to read it.** Solid arrows are synchronous HTTP (or a service's own database). Dotted arrows are
 asynchronous Kafka events. No service calls another service directly: cross-service data moves only as events
-(ADR-002, ADR-005), and the browser reaches every service only through the gateway. Service addresses are static
-(ADR-006).
+(ADR-002, ADR-005). The frontend calls only the gateway. For local development, compose also publishes each
+service's port, the databases and Kafka on the host, so a direct call can skip the gateway, though not the
+service's own token check. Service addresses are static (ADR-006).
 
 ---
 
@@ -128,10 +129,10 @@ flowchart LR
 ```mermaid
 flowchart LR
     req["Request handler<br/>@Transactional method"]
-    biz[("Business tables<br/>e.g. appointment")]
+    biz[("Business tables<br/>e.g. appointments")]
     ob[("outbox table")]
-    relay["OutboxRelay<br/>every 1 s, batches of 100<br/>FOR UPDATE SKIP LOCKED"]
-    prune["OutboxPruningJob<br/>deletes published rows after 7 days"]
+    relay["OutboxRelay<br/>1 s after the previous run, batches of 100<br/>FOR UPDATE SKIP LOCKED"]
+    prune["OutboxPruningJob<br/>daily at 03:00, deletes published rows<br/>older than 7 days"]
     k{{"Kafka"}}
 
     req -->|"1. change"| biz
@@ -166,7 +167,7 @@ sequenceDiagram
     participant N as notification-service
 
     P->>GW: POST /api/appointments (Bearer PATIENT token)
-    GW->>GW: verify signature + expiry, set X-Correlation-Id
+    GW->>GW: resolve or generate X-Correlation-Id, then verify signature + expiry
     GW->>A: proxy request
     A->>A: validate token again (public key), patient id = token sub
     A->>DB: check ValidPatient / ValidDoctor read-model (404 if unknown)
@@ -194,29 +195,37 @@ returns. If notification-service is down, Kafka retains the event and the consum
 
 ```mermaid
 flowchart LR
-    subgraph keys["./keys, mounted read-only at /run/keys"]
+    subgraph keys["./keys"]
         priv["private.pem"]
         pub["public.pem"]
     end
 
-    patient["patient-service<br/>signs PATIENT tokens"]
-    doctor["doctor-service<br/>signs DOCTOR tokens"]
+    patient["patient-service<br/>signs PATIENT tokens,<br/>validates them, role PATIENT"]
+    doctor["doctor-service<br/>signs DOCTOR tokens,<br/>validates them, role DOCTOR"]
     gw["api-gateway<br/>verifies signature + expiry<br/>(no role check)"]
     appt["appointment-service<br/>verifies token, checks role<br/>and ownership"]
-    notif["notification-service<br/>no JWT, not reachable<br/>through the gateway"]
+    notif["notification-service<br/>no JWT, no keys,<br/>no gateway route"]
 
-    priv --> patient
-    priv --> doctor
+    priv -->|"JWT_PRIVATE_KEY_PATH"| patient
+    priv -->|"JWT_PRIVATE_KEY_PATH"| doctor
     pub --> patient
     pub --> doctor
     pub --> gw
     pub --> appt
 ```
 
-Tokens are RS256 JWTs with the claims `sub`, `role` and `exp` (ADR-004). Only patient-service and doctor-service
-mount the private key. The gateway and appointment-service hold the public key only, so they can validate tokens
-but not mint them. Validation is layered: the gateway rejects unauthenticated traffic on protected paths at the
-edge, and each service still validates the token itself, because the service is the authoritative boundary.
+Arrows show which key each service is configured to load (`JWT_PRIVATE_KEY_PATH`, `JWT_PUBLIC_KEY_PATH` in
+`docker-compose.yml`).
+
+Tokens are RS256 JWTs with the claims `sub`, `role`, `iat` and `exp` (ADR-004). Only patient-service and
+doctor-service are configured with the private key, so only they sign tokens; the gateway and appointment-service
+are configured with the public key only. Compose mounts the whole `./keys` directory read-only at `/run/keys` into all
+four services, though, so `private.pem` is also readable inside the gateway and appointment-service containers. ADR-004 says the
+gateway must never have the private key mounted; the compose file does not follow that yet.
+
+Validation is layered: the gateway rejects unauthenticated traffic on protected paths at the edge, and every
+service that serves protected endpoints validates the token itself, because the service is the authoritative
+boundary.
 
 ---
 
@@ -229,11 +238,13 @@ edge, and each service still validates the token itself, because the service is 
 | `/api/doctors/**`                                | doctor-service      | `POST /api/doctors/register`, `POST /api/doctors/login`, every `GET` |
 | `/api/specialties/**`                            | doctor-service      | every `GET`                                              |
 | `/api/availability/**`                           | appointment-service | every `GET`                                              |
-| `/api/appointments/**`                           | appointment-service | none (booking, change and cancel need a PATIENT token)   |
-| `/docs/{appointment,patient,doctor}/v3/api-docs` | each service        | `GET` (feeds the gateway's Swagger UI)                   |
+| `/api/appointments/**`                           | appointment-service | none (every request needs a PATIENT token)               |
+| `/docs/{appointment,patient,doctor}/v3/api-docs` | each service        | `GET` (feeds the gateway's Swagger UI; these routes exist only while `SWAGGER_ENABLED` is true) |
 
-Every other request needs a token with a valid signature and expiry (`anyRequest().authenticated()` in the
-gateway's `SecurityConfig`). `notification-service` has no gateway route.
+The gateway also lets these through without a token: CORS preflight (`OPTIONS /**`), `/actuator/health`, its own
+Swagger UI (`/swagger-ui/**`, `/swagger-ui.html`, `/v3/api-docs/swagger-config`) and `/error`. Every other request
+needs a token with a valid signature and expiry (`anyRequest().authenticated()` in the gateway's `SecurityConfig`).
+`notification-service` has no gateway route.
 
 ---
 
@@ -241,7 +252,10 @@ gateway's `SecurityConfig`). `notification-service` has no gateway route.
 
 These are planned (README, Project Phases) and are deliberately not drawn as if they existed:
 
-* A dead-letter topic and consumer retries (specified in ADR-009, not implemented)
+* Consumer failure handling from ADR-009: poison-pill handling (`ErrorHandlingDeserializer`), a configured retry
+  policy and a dead-letter topic. No consumer configures an error handler today.
 * Metrics and distributed tracing (correlation ids are implemented, spans are not)
+* Event versioning
 * Dynamic service discovery (static per ADR-006)
-* A symptom-to-specialty triage service
+* Doctor credential verification and a proper onboarding flow
+* AI-assisted symptom-to-specialty triage

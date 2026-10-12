@@ -50,8 +50,8 @@ flowchart TB
 Solid arrows are HTTP; dotted arrows are Kafka events, written through each producer's transactional outbox (see
 Reliability). Each service owns its own PostgreSQL database (ADR-003). Appointment Service consumes
 `patient.registered` and `doctor.registered` to build a local read-model (see Cross-Service Validation below), and
-publishes booking events that Notification Service consumes. The browser reaches every service only through the
-gateway, and no service calls another directly.
+publishes booking events that Notification Service consumes. The frontend calls only the gateway, and no service
+calls another directly.
 
 More diagrams (event flow and outbox, booking sequence, key distribution, gateway routes) are in
 [`docs/architecture/architecture.md`](docs/architecture/architecture.md).
