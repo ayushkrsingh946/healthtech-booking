@@ -17,6 +17,11 @@ public class PasswordValidator implements ConstraintValidator<ValidPassword, Str
             return true;
         }
         return password.codePointCount(0, password.length()) >= MIN_CHARACTERS
-                && password.getBytes(StandardCharsets.UTF_8).length <= MAX_BYTES;
+                && fitsEncoder(password);
+    }
+
+    // BCrypt ignores everything after byte 72, so login refuses longer input rather than match a prefix.
+    public static boolean fitsEncoder(String password) {
+        return password.getBytes(StandardCharsets.UTF_8).length <= MAX_BYTES;
     }
 }
