@@ -1,6 +1,6 @@
 # Design: Doctor appointment management, availability and vacations
 
-Status: draft
+Status: approved for issue #101 and the user's request of 2026-10-22: passed design-reviewer after revisions for its confirmed findings (the last round's blocking finding was revised for but not re-reviewed, per the skill's stop rule); the user approved its "Ask first" items on 2026-10-22 and decided that removal of doctors and patients is left to #116. Records the design at approval; the code, README and ADRs are the current state.
 
 ## Task
 Issue #101 ("Doctor appointment management, availability editing and separate doctor/patient UIs"), and the user's request:
