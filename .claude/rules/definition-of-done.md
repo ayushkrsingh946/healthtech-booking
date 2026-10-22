@@ -28,14 +28,16 @@ Stop and ask before any of these, even when the task seems to require it:
 - **Security**: `SecurityConfig`, JWT issuing or validation, role and
   ownership checks, gateway auth or CORS.
 - **Dependencies**: a new library in a `pom.xml` or `package.json`.
+- **Business rules**: a plan that contradicts `docs/domain.md`, and any edit
+  to that document. See "Business rules in docs/domain.md" below.
 
 Also ask when the task can't be done without breaking a rule in CLAUDE.md
 or an ADR.
 
 When the user approves a design note (the `design-review` skill), that
-approval covers the "Ask first" items and any change to a CLAUDE.md rule
-or an ADR that the note describes. Anything the note doesn't describe
-still needs asking.
+approval covers the "Ask first" items and any change to a CLAUDE.md rule,
+an ADR or `docs/domain.md` that the note describes. Anything the note
+doesn't describe still needs asking.
 
 Note bugs you find outside the task in the PR description. Don't fix
 them in the same PR.
@@ -48,6 +50,26 @@ design note and get it through `design-reviewer` before implementing.
 Bug fixes and other changes contained in one service skip this. The
 `design-review` skill has the template, the steps, and what counts as an
 approved spec.
+
+## Business rules in docs/domain.md
+
+`docs/domain.md` is the record of the business rules. Section 3.1 lists the
+rules the code enforces, 3.2 the confirmed rules it doesn't enforce yet, and
+section 5 what is deliberate for now or undecided.
+
+- **Before implementing** a change to behavior (a rule, the appointment
+  lifecycle, a use case), read the rules it touches, in 3.1, 3.2 and 5.
+- **If your plan contradicts it, stop and ask.** That means the plan changes
+  or drops a rule in 3.1, implements a 3.2 rule differently from what it
+  says, or settles an open decision in section 5. Name the `BR-` id, what
+  the document says, what you would do instead, and why. Don't pick a side
+  yourself, and don't implement the contradicting plan while you wait.
+- **Don't edit `docs/domain.md` on your own.** Change it only after the
+  user approves the exact change, or when an approved spec (as the
+  `design-review` skill defines it) describes it. That includes moving a
+  rule from 3.2 to 3.1 once it is implemented: if the spec names the rule,
+  do it; otherwise propose the wording and ask.
+- A change that follows the document and leaves it correct needs no edit.
 
 ## Done means all of these hold
 
@@ -75,7 +97,9 @@ approved spec.
 5. **Everything that describes the behavior matches it.** That covers
    OpenAPI annotations, README, ADRs, `scripts/test-flow.sh`,
    `scripts/gateway-security-smoke-test.sh` and the frontend when it calls
-   the changed endpoint.
+   the changed endpoint. For `docs/domain.md`, either it already matches
+   or its update was approved as described under "Business rules in
+   docs/domain.md"; the PR says which `BR-` ids the change touches.
 6. **Duplicated code is changed in every copy** CLAUDE.md lists, and in
    the outbox tests, which are adapted per service.
 7. **You have also re-read the full diff yourself.** This is a hygiene
