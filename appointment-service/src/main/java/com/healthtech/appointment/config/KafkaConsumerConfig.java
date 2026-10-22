@@ -1,5 +1,6 @@
 package com.healthtech.appointment.config;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.healthtech.appointment.event.DoctorRegistered;
@@ -25,6 +26,8 @@ public class KafkaConsumerConfig {
     private <T> ConsumerFactory<String, T> factoryFor(Class<T> type) {
         ObjectMapper mapper = new ObjectMapper();
         mapper.registerModule(new JavaTimeModule());
+        // A producer may add a field before this service is upgraded; without this the record never deserializes.
+        mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
         JsonDeserializer<T> deserializer = new JsonDeserializer<>(type, mapper);
         deserializer.ignoreTypeHeaders();
