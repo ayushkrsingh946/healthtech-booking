@@ -65,8 +65,9 @@ stateDiagram-v2
 The diagram and table show what the code does today. Confirmed changes that
 are not implemented yet: cancelling will need the same notice as changing
 (BR-22), a patient will not be able to hold two appointments at the same
-time (BR-25), and the notice for changing will not apply to a change of the
-notes only (BR-32).
+time (BR-25), the notice for changing will not apply to a change of the
+notes only (BR-32), and cancel and change will require the patient in the read
+model, as booking does (BR-33).
 
 Transitions that exist, and what is rejected on each:
 
@@ -142,6 +143,7 @@ with its enforcing class and tests.
 | BR-30 | The appointment read model follows changes to doctors and patients (and removals). | Not implemented, #116 (overlaps #101) | Written only from `doctor.registered` and `patient.registered`; each event overwrites the row for its id (BR-16). |
 | BR-31 | A doctor can see and manage their own appointments and availability, in a doctor-specific UI separate from the patient UI. | Not implemented, #101 | The appointment API admits only patients (BR-10); doctors can change nothing after registering; both roles share one toolbar. |
 | BR-32 | The change notice (BR-13) applies only to a change of type or time. A change of the notes only is allowed inside the window, on an appointment that is not cancelled (BR-12) and is the caller's own (BR-09). | Not implemented, #117 (bug) | The notice check runs before the fields are looked at, so a notes-only change inside 48 hours, or after the start, is refused with 409 "Change Window Closed"; the frontend shows the "can no longer be changed" pop-up instead of the form. |
+| BR-33 | Cancel and change require the patient in the read model, as booking does (BR-16): an unknown patient gets 404 "Patient Not Found". | Not implemented, #113 | Cancel and change use the token subject only and never look the patient up. |
 
 ## 4. Use cases
 
@@ -156,8 +158,8 @@ request reaches a service.
 | Log in (patient / doctor) | Patient / doctor | `POST /api/auth/login` (username + password) / `POST /api/doctors/login` (email + password) | Looks the account up, compares the BCrypt hash, returns 200 with a JWT. | BR-18; a doctor login with a malformed email or a blank field gives 400 before the credential check |
 | Browse doctors and availability | Anyone, no token | `GET /api/specialties`, `GET /api/doctors?specialty=&language=`, `GET /api/doctors/{id}`, `GET /api/availability?doctorId=&date=` | Lists specialties, filters doctors by exact specialty name and/or language, shows one doctor's profile, and lists the free slots of one doctor on one date. | BR-08 (availability); unknown doctor id 404, unknown language or malformed parameter 400 |
 | Book | Patient | `POST /api/appointments` | Takes the patient from the token, sets duration 30 and status `CONFIRMED`, runs the booking rules against the doctor's read model, inserts, queues `appointment.booked`, returns 201 with the appointment. | BR-10, BR-15, BR-16, BR-01, BR-03, BR-05 (in the order of BR-06), BR-07; planned: BR-25 |
-| Change | Patient | `PATCH /api/appointments/{id}` | Locks the appointment row, checks owner, status and notice, optionally moves it to a new free slot, updates type and notes, queues `appointment.changed` if type or time changed, returns 200. | BR-10, BR-14, BR-09, BR-12, BR-13, BR-16, BR-01, BR-03, BR-05, BR-07, BR-11 (lock timeout, 503); planned: BR-25 |
-| Cancel | Patient | `PUT /api/appointments/{id}/cancel` | Locks the appointment row, checks the owner, sets status `CANCELLED`, queues `appointment.cancelled`, returns 200. A repeat returns 200 unchanged. | BR-10, BR-09, BR-11 (lock timeout, 503; a repeat cancel is a no-op, not a rejection); planned: BR-22 |
+| Change | Patient | `PATCH /api/appointments/{id}` | Locks the appointment row, checks owner, status and notice, optionally moves it to a new free slot, updates type and notes, queues `appointment.changed` if type or time changed, returns 200. | BR-10, BR-14, BR-09, BR-12, BR-13, BR-16, BR-01, BR-03, BR-05, BR-07, BR-11 (lock timeout, 503); planned: BR-25, BR-33 |
+| Cancel | Patient | `PUT /api/appointments/{id}/cancel` | Locks the appointment row, checks the owner, sets status `CANCELLED`, queues `appointment.cancelled`, returns 200. A repeat returns 200 unchanged. | BR-10, BR-09, BR-11 (lock timeout, 503; a repeat cancel is a no-op, not a rejection); planned: BR-22, BR-33 |
 | View my appointments | Patient | `GET /api/appointments` | Returns the caller's appointments ordered by start time, ascending, including cancelled ones. | BR-10 |
 | View my profile | Patient | `GET /api/patients/{id}` (patient-service) | Returns the profile when the id is the caller's own. | BR-10 (patient-service `SecurityConfig`), BR-09 |
 | Notification | System (Kafka consumers in notification-service) | none; no endpoint exposes notifications | Consumes `appointment.booked`, `appointment.cancelled` and `appointment.changed` and stores one `Notification` row each, with the message "Appointment booked for / cancelled for / changed to" plus the appointment time. | BR-21 (a duplicate is ignored, not an error) |
@@ -183,7 +185,7 @@ Deliberate for now:
 
 Open decisions:
 
-4. **Where the patient read model is required** (#113). Booking requires the
-   patient (404), while list, cancel and change use the token subject only;
-   a token for a patient unknown to appointment-service gets an empty list.
-   The intended behaviour is not decided.
+4. **Whether the list requires the patient read model** (#113). Cancel and
+   change will require it (BR-33). `GET /api/appointments` does not today: a
+   token for a patient unknown to appointment-service gets an empty list.
+   Not decided; it stays as it is until it is.
