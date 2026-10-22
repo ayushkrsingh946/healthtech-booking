@@ -74,4 +74,16 @@ class PasswordRuleTest {
         // Act & Assert
         assertThat(passwordRejected("12345678")).isFalse();
     }
+
+    @Test
+    void password_sevenCharactersOfFourBytesEach_isRefused() {
+        // Act & Assert: 14 UTF-16 code units, but only 7 characters
+        assertThat(passwordRejected("😀".repeat(7))).isTrue();
+    }
+
+    @Test
+    void password_eightCharactersOfFourBytesEach_isAccepted() {
+        // Act & Assert: 32 bytes
+        assertThat(passwordRejected("😀".repeat(8))).isFalse();
+    }
 }

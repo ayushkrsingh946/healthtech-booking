@@ -16,7 +16,7 @@ public class PasswordValidator implements ConstraintValidator<ValidPassword, Str
         if (password == null) {
             return true;
         }
-        return password.length() >= MIN_CHARACTERS
+        return password.codePointCount(0, password.length()) >= MIN_CHARACTERS
                 && password.getBytes(StandardCharsets.UTF_8).length <= MAX_BYTES;
     }
 }
