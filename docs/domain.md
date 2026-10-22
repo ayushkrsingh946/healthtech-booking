@@ -1,9 +1,16 @@
 # Domain
 
-The business domain as the code implements it today. It is derived from the
-code and its tests, not from the README. When the code and this document
-disagree, the code wins; fix this document in the same PR (CLAUDE.md,
-Conventions).
+The business domain as the code implements it today, plus the rules the
+product owner has confirmed but the code does not enforce yet. It is derived
+from the code and its tests, not from the README.
+
+- Section 3.1 lists the rules the code enforces. Section 3.2 lists the
+  confirmed rules it does not (yet), each with its status and issue.
+- When the code and section 3.1 disagree, the code wins and this document is
+  wrong. Section 3.2 is the intended behaviour: when the code disagrees with
+  it, the code is the one to fix.
+- Changes to this document need the user's approval or an approved spec that
+  describes them (`.claude/rules/definition-of-done.md`).
 
 Conventions used below:
 
@@ -28,9 +35,9 @@ Conventions used below:
 | Specialty | A named medical field (e.g. "Cardiology"); a doctor has one or more, and doctors are searched by exact specialty name. |
 | Opening hours | A doctor's weekly blocks of (weekday, start, end); a day can have several blocks, which must not overlap and must start and end on the hour or half hour. |
 | Slot | A 30-minute interval that starts on the hour or half hour and lies fully inside one opening-hours block of a doctor. It has no table of its own: it is the pair (doctor, start time). |
-| Appointment | A patient's reservation of one slot with one doctor, with a type, optional notes (max 500 characters), a fixed 30-minute duration and a status of `CONFIRMED` or `CANCELLED`. |
+| Appointment | A patient's reservation of one slot with one doctor, with a type, optional notes (max 500 characters), a fixed 30-minute duration and a status of `CONFIRMED` or `CANCELLED` (`PENDING` exists but is reserved, see section 5). |
 | Appointment type | Why the patient comes: `INITIAL_CONSULTATION`, `FOLLOW_UP` or `VACCINATION`. |
-| Insurance type | `PRIVATE` or `STATUTORY`, chosen at patient registration and returned in the patient's profile; no rule reads it. |
+| Insurance type | `PRIVATE` or `STATUTORY`, chosen at patient registration and returned in the patient's profile, kept for the doctor to see; no rule reads it today. |
 | Read model | appointment-service's own copy of the doctors (id, name, opening hours) and patients (id, name, email) it needs, filled from the `doctor.registered` and `patient.registered` events. Booking and availability check it instead of calling the other services. |
 
 ## 2. Appointment lifecycle
@@ -52,8 +59,13 @@ stateDiagram-v2
     end note
 ```
 
-`PENDING` exists in the `AppointmentStatus` enum but no code path ever sets
-it (see Unconfirmed), so it is not a state in the diagram.
+`PENDING` exists in the `AppointmentStatus` enum but no code path sets it
+(reserved, see section 5), so it is not a state in the diagram.
+
+The diagram and table show what the code does today. Confirmed changes that
+are not implemented yet: cancelling will need the same notice as changing
+(BR-22), and a patient will not be able to hold two appointments at the same
+time (BR-25).
 
 Transitions that exist, and what is rejected on each:
 
@@ -82,6 +94,10 @@ Change publishes only when the type or time actually changed.
 
 ## 3. Business rules
 
+### 3.1 Implemented
+
+Every rule in this table is enforced by the code today.
+
 | ID | Rule | Enforced by | Covered by |
 |---|---|---|---|
 | BR-01 | Slot grid: a start time must be on the hour or half hour with zero seconds and nanos, otherwise 400 "Slot Not Aligned". Applies to booking and to a changed time. | `SlotAlignedRule`, `SlotPolicy#isAligned` | `BookingRulesTest#slotAligned_onGrid_shouldPass`, `#slotAligned_offGrid_shouldThrowSlotNotAligned`<br>`SlotPolicyTest#isAligned_onTheHourAndHalfHour_shouldBeTrue`, `#isAligned_offGridMinuteSecondOrNano_shouldBeFalse`<br>`AppointmentServiceUpdateTest#updateAppointment_newTimeNotOnTheSlotGrid_throwsSlotNotAligned`<br>`AppointmentUpdateEndpointTest#updateAppointment_slotNotAligned_returns400` |
@@ -96,15 +112,34 @@ Change publishes only when the type or time actually changed.
 | BR-10 | Role: the appointment API requires a valid token with role `PATIENT` (no or invalid token 401, doctor token 403). Browsing doctors, specialties and availability is public. | appointment `SecurityConfig` (`anyRequest().hasRole("PATIENT")`, `GET /api/availability/**` permitted) | `AppointmentSecurityTest#bookAppointment_doctorToken_returns403`, `#getMyAppointments_doctorToken_returns403`, `#cancelAppointment_doctorToken_returns403`<br>`AppointmentIntegrationTest#createAppointment_doctorToken_returns403`, `#createAppointment_signWithUntrustedKeypair_returns401`<br>`AppointmentUpdateEndpointTest#updateAppointment_noToken_returns401`, `#updateAppointment_doctorToken_returns403` |
 | BR-11 | Repeat cancel: cancelling an already-cancelled appointment returns 200 with the current state, saves nothing and publishes no second event. Cancel and change take a row lock on the appointment (`findByIdForUpdate`), which serialises concurrent calls; if the lock is not granted within 3 seconds the answer is 503 "Appointment Busy" with `Retry-After: 1`, and retrying is safe. | `AppointmentService#cancelAppointment`, `AppointmentRepository#findByIdForUpdate` | `AppointmentServiceTest#cancelAppointment_alreadyCancelledAppointment_shouldReturnCurrentStateWithoutSavingOrPublishing`<br>`AppointmentIntegrationTest#cancelAppointment_calledTwice_secondCallIsNoOpAndPublishesOneEvent`, `#cancelAppointment_concurrentCalls_allReturn200AndPublishOneEvent`, `#cancelAppointment_rowHeldByAnotherTransaction_returns503ThenSucceedsOnceReleased`<br>`AppointmentCancelErrorResponseTest#cancelAppointment_lockNotAcquired_returns503WithRetryAfter`<br>`AppointmentChangeIntegrationTest#changeAppointment_rowHeldByAnotherTransaction_returns503ThenSucceedsOnceReleased`, `AppointmentUpdateEndpointTest#updateAppointment_lockWaitTimesOut_returns503WithRetryAfter` |
 | BR-12 | A cancelled appointment cannot be changed: 409 "Appointment Not Changeable". | `AppointmentService#updateAppointment` | `AppointmentServiceUpdateTest#updateAppointment_cancelledAppointment_throwsNotChangeable`<br>`AppointmentUpdateEndpointTest#updateAppointment_cancelledAppointment_returns409NotChangeable`<br>`AppointmentChangeIntegrationTest#changeAppointment_cancelledAppointment_returns409NotChangeable`, `#changeAppointment_racingACancel_neverRevivesTheCancelledAppointment` |
-| BR-13 | Change notice: an appointment can be changed only while its current start is at least `appointment.change.min-notice-hours` (default 48) after now; exactly 48 hours is allowed. This is checked against the old start, for every kind of change including notes only; the new time only has to satisfy BR-01, BR-03 and BR-05. Otherwise 409 "Change Window Closed". Cancelling has no such window. | `ChangePolicyProperties`, `AppointmentService#updateAppointment` | `AppointmentServiceUpdateTest#updateAppointment_startsExactlyAtMinimumNotice_isAllowed`, `#updateAppointment_startsOneMinuteInsideMinimumNotice_throwsChangeWindowClosed`, `#updateAppointment_alreadyStarted_throwsChangeWindowClosed`, `#updateAppointment_configuredNoticeOfSixHours_allowsAppointmentSevenHoursAway`<br>`AppointmentUpdateEndpointTest#updateAppointment_insideNoticePeriod_returns409ChangeWindowClosed`<br>`AppointmentChangeIntegrationTest#changeAppointment_startsInLessThan48Hours_returns409ChangeWindowClosed` |
+| BR-13 | Change notice: an appointment can be changed only while its current start is at least `appointment.change.min-notice-hours` (default 48) after now; exactly 48 hours is allowed. This is checked against the old start, for every kind of change including notes only; the new time only has to satisfy BR-01, BR-03 and BR-05. Otherwise 409 "Change Window Closed". Cancelling has no such window today (BR-22). | `ChangePolicyProperties`, `AppointmentService#updateAppointment` | `AppointmentServiceUpdateTest#updateAppointment_startsExactlyAtMinimumNotice_isAllowed`, `#updateAppointment_startsOneMinuteInsideMinimumNotice_throwsChangeWindowClosed`, `#updateAppointment_alreadyStarted_throwsChangeWindowClosed`, `#updateAppointment_configuredNoticeOfSixHours_allowsAppointmentSevenHoursAway`<br>`AppointmentUpdateEndpointTest#updateAppointment_insideNoticePeriod_returns409ChangeWindowClosed`<br>`AppointmentChangeIntegrationTest#changeAppointment_startsInLessThan48Hours_returns409ChangeWindowClosed` |
 | BR-14 | Change request: partial update of type, dateTime and notes; at least one must be present (400 otherwise); notes at most 500 characters, and an empty string clears them. Doctor, patient, duration and status never change. Booking rules re-run only when the time differs from the stored one. An event is published only when the type or time changed (a notes-only or no-op change publishes nothing). | `AppointmentUpdateRequest`, `AppointmentService#updateAppointment` | `AppointmentUpdateEndpointTest#updateAppointment_emptyObject_returns400`, `#updateAppointment_notesOf500Characters_isAccepted`, `#updateAppointment_notesOf501Characters_returns400`, `#updateAppointment_emptyNotesAlone_isAccepted`, `#updateAppointment_unknownType_returns400`, `#updateAppointment_malformedDateTime_returns400`<br>`AppointmentServiceUpdateTest#updateAppointment_emptyNotes_clearsNotes`, `#updateAppointment_notesOnly_savesNotesAndPublishesNoEvent`, `#updateAppointment_sameTimeAndType_publishesNoEventAndSkipsDoctorLookup`, `#updateAppointment_typeAndTime_appliesBoth`<br>`AppointmentChangeIntegrationTest#changeAppointment_emptyBody_returns400`, `#changeAppointment_notesOnly_publishesNoEvent` |
 | BR-15 | Booking request: `doctorId`, `dateTime` and `type` are required; notes at most 500 characters. Otherwise 400 "Validation Error". | `AppointmentRequest` (`@NotNull`, `@Size`), `GlobalExceptionHandler` | **no test found** |
 | BR-16 | Read-model existence: booking needs both the patient and the doctor in the read model (else 404 "Patient Not Found" / "Doctor Not Found"); availability needs the doctor; a change needs the doctor only when the time changes. Nothing is asked of patient-service or doctor-service at request time, so a patient or doctor who registered a moment ago can briefly get 404 until their event is processed. Each event overwrites the stored row for its id, so a re-delivered identical event leaves the projection unchanged. | `AppointmentService`, `AvailabilityService`, `DoctorEventConsumer`, `PatientEventConsumer` | `AppointmentServiceUpdateTest#updateAppointment_doctorMissingFromReadModel_throwsDoctorNotFound`<br>`AppointmentUpdateEndpointTest#updateAppointment_doctorUnknown_returns404`<br>`AvailabilityServiceTest#getAvailableSlots_unknownDoctor_shouldThrowDoctorNotFoundException`<br>`ReadModelProjectionIntegrationTest#patientRegisteredEvent_consumed_createsValidPatientProjection`, `#doctorRegisteredEvent_consumed_createsValidDoctorProjection`, `#doctorRegisteredEvent_redelivered_leavesOpeningHoursUnchanged`, `#patientRegisteredEvent_redelivered_leavesProjectionUnchanged`<br>**no test found** for the 404 on booking with an unknown patient or doctor |
-| BR-17 | Password: a patient's password is 8 to 72 characters (400 with a `password` field error otherwise); a doctor's is at least 8 with no maximum. Both are stored only as a BCrypt hash. BCrypt ignores bytes beyond the 72nd (see Unconfirmed). | patient: `RegisterRequest#password` (`@NotBlank`, `@Size(min = 8, max = 72)`), `AuthService`; doctor: `DoctorRegistrationRequest#password` (`@NotBlank`, `@Size(min = 8)`), `DoctorAuthService` | patient: `AuthControllerTest#register_passwordTooShort_returns400WithPasswordError`, `#register_passwordExactlyMinimumLength_returns201`, `#register_passwordTooLong_returns400WithPasswordError`, `#register_passwordExactlyMaximumLength_returns201`, `#register_blankPassword_returns400WithPasswordError`<br>patient: `AuthServiceTest#register_passwordIsStoredAsHash_notPlaintext`<br>doctor: `DoctorAuthServiceTest#register_passwordIsStoredAsHash_notPlaintext`<br>**no test found** for the doctor password length (7 and 8 characters) |
+| BR-17 | Password: a patient's password is 8 to 72 characters (400 with a `password` field error otherwise); a doctor's is at least 8 with no maximum. Both are stored only as a BCrypt hash. A password over 72 bytes is rejected by the encoder, which is a bug today (BR-27). | patient: `RegisterRequest#password` (`@NotBlank`, `@Size(min = 8, max = 72)`), `AuthService`; doctor: `DoctorRegistrationRequest#password` (`@NotBlank`, `@Size(min = 8)`), `DoctorAuthService` | patient: `AuthControllerTest#register_passwordTooShort_returns400WithPasswordError`, `#register_passwordExactlyMinimumLength_returns201`, `#register_passwordTooLong_returns400WithPasswordError`, `#register_passwordExactlyMaximumLength_returns201`, `#register_blankPassword_returns400WithPasswordError`<br>patient: `AuthServiceTest#register_passwordIsStoredAsHash_notPlaintext`<br>doctor: `DoctorAuthServiceTest#register_passwordIsStoredAsHash_notPlaintext`<br>**no test found** for the doctor password length (7 and 8 characters) |
 | BR-18 | Login failure: an unknown username (patient) or email (doctor) and a wrong password give the same 401 "Invalid Credentials" with the same message. | patient `AuthService#login`, doctor `DoctorAuthService#login` | patient: `AuthServiceTest#login_unknownUsername_throwsInvalidCredentialsException`, `#login_wrongPassword_throwsInvalidCredentialsException`<br>doctor: `DoctorAuthServiceTest#login_unknownEmail_throwsInvalidCredentialsException`, `#login_wrongPassword_throwsInvalidCredentialsException`<br>doctor: `DoctorIntegrationTest#login_wrongPassword_returns401`, `#login_unknownEmail_returns401` |
 | BR-19 | Unique identity: a patient's username and email, and a doctor's email, can be registered once (exact string match) or the answer is 409. | patient: unique columns on `Patient`, `AuthService#register`; doctor: unique column on `Doctor`, `DoctorAuthService#register` | patient: `AuthServiceTest#register_userExists_throwsUsernameAlreadyExistsException`, `#register_emailExists_throwsEmailAlreadyExistsException`<br>patient: `AuthIntegrationTest#register_duplicateUsername_returns409AndSingleRow`, `#register_duplicateEmail_returns409AndSingleRow`<br>doctor: `DoctorAuthServiceTest#register_emailAlreadyExists_throwsEmailAlreadyExistsException`<br>doctor: `DoctorIntegrationTest#register_duplicateEmail_returns409AndSingleRow` |
 | BR-20 | A doctor registers with at least one specialty, one language and one opening-hours block, and every given specialty id must exist (else 404 and nothing is saved). | doctor: `DoctorRegistrationRequest` (`@NotEmpty`), `DoctorAuthService#register` | doctor: `DoctorAuthServiceTest#register_specialtyNotFound_throwsAndNeverSaves`<br>**no test found** for the empty-set validation |
 | BR-21 | A notification is recorded once per event id: a re-delivered `appointment.booked`, `.cancelled` or `.changed` event is ignored, any other failure is rethrown so the message is retried. | notification: `NotificationService#record`, unique index `ux_notification_event_id` | notification: `NotificationServiceTest#record_eventIdAlreadyStored_ignoresTheDuplicateWithoutThrowing`, `#record_otherConstraintViolation_isRethrown`, `#record_databaseUnavailable_isRethrown`<br>notification: `NotificationConsumerIntegrationTest#appointmentChangedEvent_redelivered_writesOnlyOneRow` |
+
+### 3.2 Intended, not implemented
+
+Confirmed by the product owner; the code does not enforce them yet. "Today"
+is what the code does instead. When a rule is implemented, move it to 3.1
+with its enforcing class and tests.
+
+| ID | Rule | Status | Today |
+|---|---|---|---|
+| BR-22 | Cancel notice: an appointment can be cancelled only while its start is at least the configured minimum notice (the same property and default of 48 hours as BR-13) after now; exactly 48 hours is allowed. Otherwise 409 with its own problem title. A repeat cancel of an already-cancelled appointment stays a 200 no-op (BR-11). | In progress, #102 | Cancelling has no time limit; an appointment that starts in a minute, or already started, can be cancelled. |
+| BR-23 | When a cancel or change is refused because of the notice window, the patient is told to contact the clinic and is shown the doctor's phone number, taken from the doctor data (`phoneNumber`). | In progress, #102 | The change pop-up says the appointment can no longer be changed, with no phone number; cancel has no refusal. |
+| BR-24 | A successful patient login records the time in `Patient#lastLogin`; a failed login does not change it. | In progress, #103 (PR #108) | `lastLogin` is never written. |
+| BR-25 | A patient has at most one non-cancelled appointment per start time, with any doctor, on booking and on change. | Not implemented, #110 | Only the per-doctor index BR-07 exists, so a patient can book the same time with two doctors. |
+| BR-26 | Patients and doctors share one password rule. | Not implemented, #111 | Patient 8 to 72 characters, doctor at least 8 with no maximum (BR-17). |
+| BR-27 | A password the encoder cannot hash (over 72 bytes) is refused with 400 and a `password` field error, for both roles. | Not implemented, #112 (bug) | The encoder throws for a password over 72 bytes, which should surface as 500 (patient: possible with 72 characters or fewer when they are multi-byte; doctor: any such password). Login with one returns 401. Reproduced against the encoder only, not against the running services. |
+| BR-28 | All appointment times are interpreted in one defined time zone. | Not implemented, #114 | Times are zone-less `LocalDateTime` values, and "now" is the appointment-service server's default-zone clock (`Clock.systemDefaultZone()`). |
+| BR-29 | Usernames and emails are unique, and login finds them, regardless of case. | Not implemented, #115 | Exact string match: `Max` and `max` can both register (BR-19). |
+| BR-30 | The appointment read model follows changes to doctors and patients (and removals). | Not implemented, #116 (overlaps #101) | Written only from `doctor.registered` and `patient.registered`; each event overwrites the row for its id (BR-16). |
+| BR-31 | A doctor can see and manage their own appointments and availability, in a doctor-specific UI separate from the patient UI. | Not implemented, #101 | The appointment API admits only patients (BR-10); doctors can change nothing after registering; both roles share one toolbar. |
 
 ## 4. Use cases
 
@@ -118,72 +153,39 @@ request reaches a service.
 | Register (doctor) | Visitor | `POST /api/doctors/register` (doctor-service) | Validates the body, resolves the specialty ids, hashes the password, saves the doctor and queues `doctor.registered` with the opening hours, then returns 201 with a JWT (role `DOCTOR`). | BR-04, BR-17, BR-19, BR-20 |
 | Log in (patient / doctor) | Patient / doctor | `POST /api/auth/login` (username + password) / `POST /api/doctors/login` (email + password) | Looks the account up, compares the BCrypt hash, returns 200 with a JWT. | BR-18; a doctor login with a malformed email or a blank field gives 400 before the credential check |
 | Browse doctors and availability | Anyone, no token | `GET /api/specialties`, `GET /api/doctors?specialty=&language=`, `GET /api/doctors/{id}`, `GET /api/availability?doctorId=&date=` | Lists specialties, filters doctors by exact specialty name and/or language, shows one doctor's profile, and lists the free slots of one doctor on one date. | BR-08 (availability); unknown doctor id 404, unknown language or malformed parameter 400 |
-| Book | Patient | `POST /api/appointments` | Takes the patient from the token, sets duration 30 and status `CONFIRMED`, runs the booking rules against the doctor's read model, inserts, queues `appointment.booked`, returns 201 with the appointment. | BR-10, BR-15, BR-16, BR-01, BR-03, BR-05 (in the order of BR-06), BR-07 |
-| Change | Patient | `PATCH /api/appointments/{id}` | Locks the appointment row, checks owner, status and notice, optionally moves it to a new free slot, updates type and notes, queues `appointment.changed` if type or time changed, returns 200. | BR-10, BR-14, BR-09, BR-12, BR-13, BR-16, BR-01, BR-03, BR-05, BR-07, BR-11 (lock timeout, 503) |
-| Cancel | Patient | `PUT /api/appointments/{id}/cancel` | Locks the appointment row, checks the owner, sets status `CANCELLED`, queues `appointment.cancelled`, returns 200. A repeat returns 200 unchanged. | BR-10, BR-09, BR-11 (lock timeout, 503; a repeat cancel is a no-op, not a rejection) |
+| Book | Patient | `POST /api/appointments` | Takes the patient from the token, sets duration 30 and status `CONFIRMED`, runs the booking rules against the doctor's read model, inserts, queues `appointment.booked`, returns 201 with the appointment. | BR-10, BR-15, BR-16, BR-01, BR-03, BR-05 (in the order of BR-06), BR-07; planned: BR-25 |
+| Change | Patient | `PATCH /api/appointments/{id}` | Locks the appointment row, checks owner, status and notice, optionally moves it to a new free slot, updates type and notes, queues `appointment.changed` if type or time changed, returns 200. | BR-10, BR-14, BR-09, BR-12, BR-13, BR-16, BR-01, BR-03, BR-05, BR-07, BR-11 (lock timeout, 503); planned: BR-25 |
+| Cancel | Patient | `PUT /api/appointments/{id}/cancel` | Locks the appointment row, checks the owner, sets status `CANCELLED`, queues `appointment.cancelled`, returns 200. A repeat returns 200 unchanged. | BR-10, BR-09, BR-11 (lock timeout, 503; a repeat cancel is a no-op, not a rejection); planned: BR-22 |
 | View my appointments | Patient | `GET /api/appointments` | Returns the caller's appointments ordered by start time, ascending, including cancelled ones. | BR-10 |
 | View my profile | Patient | `GET /api/patients/{id}` (patient-service) | Returns the profile when the id is the caller's own. | BR-10 (patient-service `SecurityConfig`), BR-09 |
 | Notification | System (Kafka consumers in notification-service) | none; no endpoint exposes notifications | Consumes `appointment.booked`, `appointment.cancelled` and `appointment.changed` and stores one `Notification` row each, with the message "Appointment booked for / cancelled for / changed to" plus the appointment time. | BR-21 (a duplicate is ignored, not an error) |
 
-## 5. Unconfirmed
+## 5. Deliberate for now, and open decisions
 
-Behaviour that looks accidental rather than chosen. Nothing here is a rule:
-each item records what the code does, so that someone can decide whether it
-is intended. When one is decided, move it into section 3 or fix the code.
+Not rules and not bugs: what the code does on purpose for now, and what is
+still to be decided. Everything confirmed as a defect or a missing rule is in
+section 3.2.
 
-1. **Cancelling has no time limit, changing has 48 hours.** `cancelAppointment`
-   never looks at the clock, so a patient can cancel an appointment that
-   starts in a minute or one that has already passed, while
-   `updateAppointment` refuses anything starting in under 48 hours. A
-   cancel of a past appointment also publishes `appointment.cancelled`.
-2. **A past appointment can never be changed, but the error says
-   "notice".** An appointment that has already started fails the notice
-   check (BR-13) with "Change Window Closed", the same as one 47 hours away.
-   The same check also blocks a notes-only change, although notes are not
-   part of any event or notification.
-3. **A patient can hold overlapping appointments.** The unique index (BR-07)
-   is per doctor and start time only, so one patient can book the same
-   time with two doctors, or book many appointments back to back with no
-   limit.
-4. **`PENDING` is never used.** The `AppointmentStatus` enum and the
-   frontend type list it, but booking sets `CONFIRMED` directly and no code
-   sets `PENDING`.
-5. **Insurance type and date of birth affect nothing.** They are stored,
-   returned in the profile, and not read by any rule, event or
-   notification.
-6. **`lastLogin` is never written.** `Patient#lastLogin` exists, but login
-   does not set it.
-7. **Doctor and patient password rules differ.** A patient's password has a
-   72-character maximum (BR-17); a doctor's has none. Whether the doctor
-   side should match is not recorded anywhere.
-8. **Doctors have no appointment features.** A doctor cannot list, see,
-   cancel or be notified about their appointments: `/api/appointments`
-   admits only the `PATIENT` role (BR-10) and notification-service stores
-   notifications for the patient id and doctor id without any endpoint to
-   read them.
-9. **The patient read model is checked on booking only.** Cancel, change
-   and list use the token subject (BR-09) and never look the patient up in
-   the read model, so a token for a patient unknown to appointment-service
-   gets an empty list from `GET /api/appointments`, while booking returns
-   404.
-10. **404 before 403 on appointments.** Cancel and change return 404 for an
-    unknown id and 403 for someone else's, so a caller can tell whether an
-    appointment id exists.
-11. **Date-times have no time zone.** Appointment times are `LocalDateTime`
-    values, and "now" for BR-05, BR-08 and BR-13 is the appointment-service
-    server's default time zone clock (`Clock.systemDefaultZone()`). Patients
-    in another zone, or a server whose zone changes, would see different
-    results.
-12. **Identity strings are case-sensitive.** Usernames and emails are
-    compared exactly (BR-19), so `Max` and `max` can both register, and a
-    login must match the stored case.
-13. **The read model only ever grows.** It is written from
-    `doctor.registered` and `patient.registered` alone. No event or
-    endpoint exists to change or remove a doctor or patient, so nothing
-    changes a doctor's opening hours in the read model after registration
-    (a second `doctor.registered` for the same id would overwrite them).
-14. **The 72-character maximum counts characters, BCrypt counts bytes.** The
-    patient `@Size(max = 72)` limit does not stop a shorter multi-byte
-    password from exceeding 72 bytes, and BCrypt ignores the bytes beyond
-    that. The doctor password has no maximum at all, so a long one is
-    accepted and silently truncated for comparison.
+Deliberate for now:
+
+1. **`PENDING` is never set.** The `AppointmentStatus` enum and the frontend
+   type list it, but booking sets `CONFIRMED` directly. Kept for the
+   doctor's view of appointments (BR-31); no behaviour is attached to it yet.
+2. **Insurance type and date of birth affect nothing.** They are stored and
+   returned in the patient's profile so a doctor can see them (BR-31); no
+   rule, event or notification reads them.
+3. **Cancel and change answer 404 for an unknown id and 403 for someone
+   else's appointment.** This tells a caller that an id exists. Appointment
+   ids are random UUIDs, so there is nothing to enumerate, and a clear 403
+   is more useful to the frontend, so BR-09 keeps it.
+
+Open decisions:
+
+4. **Notes-only change inside the notice window.** BR-13 blocks every change
+   inside the 48 hours, including one that only edits the notes, which is
+   not part of any event or notification. Whether that is intended is not
+   decided; it is not in section 3.2 until it is.
+5. **Where the patient read model is required** (#113). Booking requires the
+   patient (404), while list, cancel and change use the token subject only;
+   a token for a patient unknown to appointment-service gets an empty list.
+   The intended behaviour is not decided.
