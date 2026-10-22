@@ -100,4 +100,11 @@ class PasswordRuleTest {
         // Act & Assert: 32 bytes
         assertThat(passwordRejected("😀".repeat(8))).isFalse();
     }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("bytesAroundTheLimit")
+    void fitsEncoder_isTrueExactlyUpTo72Bytes(String description, String password, boolean refused) {
+        // Act & Assert: the login guard counts bytes, like registration
+        assertThat(PasswordValidator.fitsEncoder(password)).isEqualTo(!refused);
+    }
 }
