@@ -27,39 +27,34 @@ Server) · MapStruct · JWT (RS256) · springdoc-openapi (Swagger UI) · Docker 
 
 ---
 
-## Architecture Overview (Phase 2)
+## Architecture Overview
 
-```
-        ┌─────────────┐          ┌───────────────────┐
-        │   Client    │─────────▶│    API Gateway     │  (single entry, routing)
-        └─────────────┘          └─────────┬─────────┘
-                                           │
-        ┌──────────────────────────────────┼──────────────────────────────────┐
-        │                                  │                                  │
-        ▼                                  ▼                                  ▼
-┌─────────────────┐              ┌────────────────────┐              ┌────────────────┐
-│ Patient Service │              │  Appointment Svc   │              │ Doctor Service │
-│ auth, JWT issue │              │ booking, slots,    │              │ profiles,      │
-│ (RS256)         │              │ read-model,        │              │ specialties,   │
-│                 │              │ JWT validation     │              │ filtering      │
-└────────┬────────┘              └─────────┬──────────┘              └───────┬────────┘
-         │ patient.registered              │ appointment.booked              │ doctor.registered
-         │                                 │ appointment.cancelled / changed │
-         └─────────────────────────────────┼─────────────────────────────────┘
-                                           ▼
-                                   ┌────────────────┐
-                                   │  Apache Kafka  │
-                                   └───────┬────────┘
-                                           │ appointment.booked / cancelled / changed
-                                           ▼
-                                 ┌───────────────────┐
-                                 │ Notification Svc  │
-                                 └───────────────────┘
+```mermaid
+flowchart TB
+    browser(["Browser · React SPA"])
+    gw["api-gateway<br/>routing · JWT edge check"]
+    patient["patient-service<br/>accounts · PATIENT tokens"]
+    doctor["doctor-service<br/>profiles · DOCTOR tokens"]
+    appt["appointment-service<br/>booking · availability"]
+    kafka{{"Apache Kafka"}}
+    notif["notification-service<br/>notification records"]
+
+    browser -->|"REST"| gw
+    gw --> patient & doctor & appt
+    patient -.->|"patient.registered"| kafka
+    doctor -.->|"doctor.registered"| kafka
+    appt <-.->|"publishes appointment.*<br/>consumes *.registered"| kafka
+    kafka -.->|"appointment.*"| notif
 ```
 
-Appointment Service consumes `patient.registered` and `doctor.registered` to build a
-local read-model (see Cross-Service Validation below), and publishes booking events that
-Notification Service consumes.
+Solid arrows are HTTP; dotted arrows are Kafka events, written through each producer's transactional outbox (see
+Reliability). Each service owns its own PostgreSQL database (ADR-003). Appointment Service consumes
+`patient.registered` and `doctor.registered` to build a local read-model (see Cross-Service Validation below), and
+publishes booking events that Notification Service consumes. The frontend calls only the gateway, and no service
+calls another directly.
+
+More diagrams (event flow and outbox, booking sequence, key distribution, gateway routes) are in
+[`docs/architecture/architecture.md`](docs/architecture/architecture.md).
 
 ---
 
@@ -121,6 +116,10 @@ availability. Booking, changing and cancellation require a valid patient token. 
 
 Availability is modeled as a **first-class resource** (`GET /api/availability`), owned by Appointment Service because it
 is computed from appointment data plus doctor opening hours.
+
+The business rules behind booking, changing and cancelling (slot grid, opening hours, double booking, the 48-hour change
+notice, ownership), the appointment lifecycle and the use cases are in [`docs/domain.md`](docs/domain.md), which also
+lists the confirmed rules that are not implemented yet.
 
 * Slots are a fixed 30-minute grid generated from a doctor's opening hours for the requested day, minus already-taken (
   non-cancelled) appointments, minus slots that already started today. A date before today has no slots.
@@ -762,7 +761,8 @@ healthtech-booking/
 │   └── test-flow.sh
 ├── docs/
 │   ├── adr/
-│   └── architecture/
+│   ├── architecture/
+│   └── domain.md
 └── docker-compose.yml
 ```
 
