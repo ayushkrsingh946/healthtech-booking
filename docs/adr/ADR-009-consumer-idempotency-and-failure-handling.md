@@ -145,9 +145,11 @@ The decisions themselves are unchanged and the status is now `Accepted`.
 
 The consumers in notification-service and appointment-service still use a plain `JsonDeserializer`
 with the default error handling, and none has a retry policy or dead-letter topic.
-appointment-service's mapper ignores unknown JSON properties, so a producer that adds a field does not
-turn every record into a poison pill before the consumer is upgraded. The
+The
 Consequences about failure handling describe the state after that work.
+
+appointment-service's mapper ignores unknown JSON properties, so a producer that adds a field does not
+turn every record into a poison pill before the consumer is upgraded.
 
 ## Consequences
 
