@@ -3,6 +3,7 @@ package com.healthtech.appointment.config;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.healthtech.appointment.event.DoctorAvailabilityUpdated;
 import com.healthtech.appointment.event.DoctorRegistered;
 import com.healthtech.appointment.event.PatientRegistered;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -46,6 +47,14 @@ public class KafkaConsumerConfig {
          ConcurrentKafkaListenerContainerFactory<String, DoctorRegistered> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(factoryFor(DoctorRegistered.class));
+        return factory;
+    }
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, DoctorAvailabilityUpdated> doctorAvailabilityKafkaListenerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, DoctorAvailabilityUpdated> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(factoryFor(DoctorAvailabilityUpdated.class));
         return factory;
     }
 
