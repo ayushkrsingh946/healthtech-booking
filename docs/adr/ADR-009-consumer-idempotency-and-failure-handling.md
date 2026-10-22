@@ -144,8 +144,7 @@ The decisions themselves are unchanged and the status is now `Accepted`.
 * The dead-letter topic, with its ERROR logging, 3-day retention and manual replay.
 
 The consumers in notification-service and appointment-service still use a plain `JsonDeserializer`
-with the default error handling, and none has a retry policy or dead-letter topic.
-The
+with the default error handling, and none has a retry policy or dead-letter topic. The
 Consequences about failure handling describe the state after that work.
 
 appointment-service's mapper ignores unknown JSON properties, so a producer that adds a field does not
