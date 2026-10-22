@@ -122,6 +122,10 @@ availability. Booking, changing and cancellation require a valid patient token. 
 Availability is modeled as a **first-class resource** (`GET /api/availability`), owned by Appointment Service because it
 is computed from appointment data plus doctor opening hours.
 
+The business rules behind booking, changing and cancelling (slot grid, opening hours, double booking, the 48-hour change
+notice, ownership), the appointment lifecycle and the use cases are in [`docs/domain.md`](docs/domain.md), which also
+lists the confirmed rules that are not implemented yet.
+
 * Slots are a fixed 30-minute grid generated from a doctor's opening hours for the requested day, minus already-taken (
   non-cancelled) appointments, minus slots that already started today. A date before today has no slots.
 * **Double-booking is prevented at the database level, race-safe.** A Postgres **partial unique index** on
@@ -724,7 +728,8 @@ healthtech-booking/
 │   └── test-flow.sh
 ├── docs/
 │   ├── adr/
-│   └── architecture/
+│   ├── architecture/
+│   └── domain.md
 └── docker-compose.yml
 ```
 
