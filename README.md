@@ -411,7 +411,9 @@ full Spring context can catch.
 ### Unit tests
 
 Plain Mockito tests against a single class, no Spring context, no I/O. These cover business logic and edge cases in
-isolation: `AppointmentServiceTest`, `AvailabilityServiceTest`, `SlotPolicyTest`, `BookingRulesTest`, `ValidDoctorTest`,
+isolation: `AppointmentServiceTest`, `AppointmentServiceUpdateTest`, `DoctorAppointmentServiceTest` (the doctor's confirm, cancel,
+change and list), `AvailabilityChangeServiceTest` (flagging after an availability change), `AvailabilityServiceTest`
+(appointment-service and doctor-service), `SlotPolicyTest`, `BookingRulesTest`, `ValidDoctorTest`,
 `DoctorServiceTest`, `SpecialtyServiceTest`, `DoctorSpecificationsTest`, `SpecialtySeederTest`, `AuthServiceTest`,
 `PatientServiceTest`, `JwtTokenProviderTest`, `NotificationServiceTest`, `OutboxEventWriterTest` (one per publishing
 service), `ConsumerCorrelationTest` (appointment and notification services), and `AppointmentEventConsumerTest` (the
@@ -419,7 +421,8 @@ Kafka listener method tested with a mocked service dependency).
 
 ### Slice tests
 
-`@WebMvcTest` tests (`AppointmentControllerTest`, `AvailabilityControllerTest`, `DoctorControllerTest`,
+`@WebMvcTest` tests (`AppointmentControllerTest`, `DoctorAppointmentEndpointTest`, `DoctorAvailabilityControllerTest`,
+`AvailabilityControllerTest`, `DoctorControllerTest`,
 `SpecialtyControllerTest`, `PatientControllerTest`) load only the web layer: the controller, validation, and the
 real Spring Security authorization rules, with the service layer mocked. Each service's `SecurityConfig` holds only
 those authorization rules; the `JwtDecoder` bean (the thing that actually needs a real key) lives in a separate
@@ -438,18 +441,25 @@ real persistence, real RS256 signature validation, and in some cases a real Kafk
   the key, payload and `X-Correlation-Id` header, so it covers the outbox relay end to end.
 * `doctor-service` (`DoctorIntegrationTest`): the same pattern for `doctor.registered`, plus opening-hours validation
   and login, against real Postgres and Kafka containers. It calls only public endpoints (register, login,
-  browsing), so it sends no token.
+  browsing), so it sends no token. `DoctorAvailabilityIntegrationTest` covers the doctor's own availability endpoints
+  with tokens: the snapshot rows in the outbox, consecutive versions under concurrent edits, and a rejected request
+  writing nothing.
 * `appointment-service` (`AppointmentIntegrationTest`, `AppointmentChangeIntegrationTest`,
-  `AvailabilityIntegrationTest`): booking, cancellation, changing (including a change racing a cancel and concurrent
-  moves to one slot), ownership checks, and availability against a real Postgres container. All three extend
+  `DoctorAppointmentIntegrationTest`, `AvailabilityChangeIntegrationTest`, `AvailabilityIntegrationTest`): booking,
+  cancellation, changing (including a change racing a cancel and concurrent moves to one slot), the doctor's list,
+  confirm, cancel and change, the flagging after an availability change and the row locks that keep it correct (a
+  cancel is not overwritten, a booking waits for an availability change, `doctor.registered` cannot regress the
+  version), ownership checks, and availability against a real Postgres container. They extend
   `AbstractAppointmentApiTest`, which mints JWTs with a throwaway RSA key pair generated inside the test, so they never
   read `keys/private.pem`. There is no Kafka in these tests: the relay's poll delay is pushed out to an hour.
-  `ReadModelProjectionIntegrationTest` instead runs a real `ConfluentKafkaContainer`
-  alongside Postgres, publishes real `patient.registered`/`doctor.registered` events, and asserts the read-model
-  consumer projects them correctly, exercising the actual Kafka listener rather than a mock.
+  `ReadModelProjectionIntegrationTest` and `DoctorAvailabilityKafkaIntegrationTest` instead run a real
+  `ConfluentKafkaContainer` alongside Postgres, publish real `patient.registered`/`doctor.registered`/
+  `doctor.availability-updated` events (the latter with a field the service does not know), and assert the read-model
+  consumers project them and flag the appointments, exercising the actual Kafka listeners rather than a mock.
 * Outbox tests (`outbox/` in patient-, doctor- and appointment-service, one adapted copy each):
   `OutboxAtomicityIntegrationTest` (real Postgres: a successful write adds exactly one unpublished outbox row, a
-  rolled-back write adds none, for booking, cancelling and changing in appointment-service), `OutboxRelayIntegrationTest` (real Postgres and Kafka: the correlation id is
+  a rolled-back write adds none, for booking, cancelling and changing in appointment-service, including the doctor's
+  confirm, cancel and change), `OutboxRelayIntegrationTest` (real Postgres and Kafka: the correlation id is
   re-attached from the stored column, concurrent relays publish each row exactly once, and `claimBatch` does not
   block on rows another transaction has locked), `OutboxRelayKafkaOutageIntegrationTest` (pauses the Kafka container:
   the request still returns `201` and leaves an unpublished row, and the row is published once Kafka is back), and
