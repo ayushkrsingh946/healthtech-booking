@@ -33,9 +33,11 @@ export function DoctorAppointmentsPage() {
   const [reloadToken, setReloadToken] = useState(0);
 
   const filtersInvalid = from !== "" && to !== "" && from > to;
+  // No box ticked would otherwise be sent as "every status"; show nothing instead of what looks unselected.
+  const noStatusSelected = statuses.length === 0;
 
   useEffect(() => {
-    if (from !== "" && to !== "" && from > to) {
+    if ((from !== "" && to !== "" && from > to) || statuses.length === 0) {
       return;
     }
     let stale = false;
@@ -133,14 +135,15 @@ export function DoctorAppointmentsPage() {
         </fieldset>
       </form>
       {filtersInvalid && <StatusMessage kind="error">The start date must not be after the end date.</StatusMessage>}
+      {noStatusSelected && <StatusMessage kind="info">Select at least one status to see appointments.</StatusMessage>}
       {notice && <StatusMessage kind="info">{notice}</StatusMessage>}
       {actionError && <StatusMessage kind="error">{actionError}</StatusMessage>}
-      {!filtersInvalid && status === "loading" && <StatusMessage kind="loading">Loading appointments...</StatusMessage>}
-      {!filtersInvalid && status === "error" && <StatusMessage kind="error">{error}</StatusMessage>}
-      {!filtersInvalid && status === "success" && appointments.length === 0 && (
+      {!filtersInvalid && !noStatusSelected && status === "loading" && <StatusMessage kind="loading">Loading appointments...</StatusMessage>}
+      {!filtersInvalid && !noStatusSelected && status === "error" && <StatusMessage kind="error">{error}</StatusMessage>}
+      {!filtersInvalid && !noStatusSelected && status === "success" && appointments.length === 0 && (
         <StatusMessage kind="info">No appointments match these filters.</StatusMessage>
       )}
-      {!filtersInvalid && status === "success" && (
+      {!filtersInvalid && !noStatusSelected && status === "success" && (
         <ul className="appointment-list">
           {appointments.map((appointment) => {
             const cancelled = appointment.status === "CANCELLED";

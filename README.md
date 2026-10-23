@@ -711,8 +711,7 @@ The patient and the doctor have separate interfaces. A visitor sees the public l
 list their appointments (filter by date range and status), confirm a pending one, change its type or time (not the
 patient's notes) and cancel it; on `/doctor/availability` they edit their weekly opening hours and add or remove
 vacations. A patient sees a pending appointment as "Awaiting confirmation" and an appointment that no longer fits the
-doctor's availability with a banner asking to reschedule or cancel (the 48-hour notice does not apply to it). The
-frontend has no test runner; it is checked by hand (see the PR).
+doctor's availability with a banner asking to reschedule or cancel (the 48-hour notice does not apply to it).
 
 ---
 

@@ -7,7 +7,26 @@ import { todayIsoDate } from "../dates";
 import type { DayOfWeek, OpeningHoursDto, VacationDto } from "../api/types";
 
 const AFFECTED_NOTICE =
-  "Saved. Booked appointments that no longer fit are flagged on the Appointments page and their patients are asked to reschedule or cancel.";
+  "Saved. If booked appointments no longer fit, they are flagged on the Appointments page and their patients are asked to reschedule or cancel.";
+
+// The first problem with the blocks, or null. The server checks the same rules; this saves the round trip.
+function hoursProblem(hours: OpeningHoursDto[]): string | null {
+  for (const row of hours) {
+    if (row.startTime >= row.endTime) {
+      return `${row.dayOfWeek}: a block must end after it starts.`;
+    }
+  }
+  for (let i = 0; i < hours.length; i++) {
+    for (let j = i + 1; j < hours.length; j++) {
+      const a = hours[i];
+      const b = hours[j];
+      if (a.dayOfWeek === b.dayOfWeek && a.startTime < b.endTime && b.startTime < a.endTime) {
+        return `${a.dayOfWeek}: two blocks overlap.`;
+      }
+    }
+  }
+  return null;
+}
 
 function sortedHours(hours: OpeningHoursDto[]): OpeningHoursDto[] {
   return [...hours]
@@ -72,9 +91,14 @@ export function DoctorAvailabilityPage() {
 
   async function handleSaveHours(event: FormEvent) {
     event.preventDefault();
-    setSavingHours(true);
     setHoursError("");
     setHoursNotice("");
+    const problem = hoursProblem(hours);
+    if (problem) {
+      setHoursError(problem);
+      return;
+    }
+    setSavingHours(true);
     try {
       const saved = await replaceOpeningHours(hours);
       setHours(sortedHours(saved.openingHours));

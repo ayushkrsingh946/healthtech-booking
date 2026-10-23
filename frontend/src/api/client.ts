@@ -9,6 +9,18 @@ const USERNAME_KEY = "healthtech.username";
 const DOCTOR_TOKEN_KEY = "healthtech.doctor.token";
 const DOCTOR_EMAIL_KEY = "healthtech.doctor.email";
 
+type SessionRole = "patient" | "doctor";
+const sessionClearedListeners: Record<SessionRole, Set<() => void>> = { patient: new Set(), doctor: new Set() };
+
+// The auth contexts hold the logged-in user in state; they listen here so that a session cleared by a request
+// (an expired token) also logs the user out of the UI, not only out of sessionStorage.
+export function onSessionCleared(role: SessionRole, listener: () => void): () => void {
+    sessionClearedListeners[role].add(listener);
+    return () => {
+        sessionClearedListeners[role].delete(listener);
+    };
+}
+
 export function getToken(): string | null {
     return sessionStorage.getItem(TOKEN_KEY);
 }
@@ -26,6 +38,7 @@ export function setSession(token: string, username: string): void {
 export function clearSession(): void {
     sessionStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(USERNAME_KEY);
+    sessionClearedListeners.patient.forEach((listener) => listener());
 }
 
 export function getDoctorToken(): string | null {
@@ -44,6 +57,7 @@ export function setDoctorSession(token: string, email: string): void {
 export function clearDoctorSession(): void {
     sessionStorage.removeItem(DOCTOR_TOKEN_KEY);
     sessionStorage.removeItem(DOCTOR_EMAIL_KEY);
+    sessionClearedListeners.doctor.forEach((listener) => listener());
 }
 
 export class ApiError extends Error {
