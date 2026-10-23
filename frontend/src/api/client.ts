@@ -62,21 +62,29 @@ export class ApiError extends Error {
 interface RequestOptions {
     method?: string;
     body?: unknown;
+    // Send the patient token.
     auth?: boolean;
+    // Send the doctor token instead.
+    asDoctor?: boolean;
 }
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    const {method = "GET", body, auth = false} = options;
+    const {method = "GET", body, auth = false, asDoctor = false} = options;
+    const authenticated = auth || asDoctor;
     const headers: Record<string, string> = {};
 
     if (body !== undefined) {
         headers["Content-Type"] = "application/json";
     }
 
-    if (auth) {
-        const token = getToken();
+    if (authenticated) {
+        const token = asDoctor ? getDoctorToken() : getToken();
         if (!token) {
-            clearSession();
+            if (asDoctor) {
+                clearDoctorSession();
+            } else {
+                clearSession();
+            }
             throw new ApiError(401, "Not Authenticated", "Please log in to continue.");
         }
         headers["Authorization"] = `Bearer ${token}`;
@@ -88,9 +96,14 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
         body: body !== undefined ? JSON.stringify(body) : undefined,
     });
 
-    if (response.status === 401 && auth) {
-        clearSession();
-        goTo("/login");
+    if (response.status === 401 && authenticated) {
+        if (asDoctor) {
+            clearDoctorSession();
+            goTo("/doctors/login");
+        } else {
+            clearSession();
+            goTo("/login");
+        }
         throw new ApiError(401, "Session Expired", "Your session has expired. Please log in again.");
     }
 
